@@ -2,25 +2,24 @@ import os
 import json
 import zipfile
 import io
-import base64
+import tempfile
+import shutil
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, send_file, session
 from werkzeug.utils import secure_filename
 import requests
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+import base64
 
 app = Flask(__name__)
 app.secret_key = 'nima_dev_ai_secret_key_2026'
-app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
-# Create folders
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs('history', exist_ok=True)
-
-# ===== YOUR API KEY - DIRECTLY EMBEDDED =====
+# ===== YOUR API KEY =====
 OPENROUTER_API_KEY = "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"
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Create temp folder for uploads
+os.makedirs('temp_uploads', exist_ok=True)
 
 # ============ HTML TEMPLATE ============
 HTML_TEMPLATE = """
@@ -29,20 +28,23 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NIMA DEV AI - Developer Intelligence</title>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <title>NIMA DEV AI - ChatGPT Style</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
         body {
             background: #0a0e1a;
-            font-family: 'Rajdhani', sans-serif;
+            font-family: 'Inter', sans-serif;
             min-height: 100vh;
-            background-image: 
-                radial-gradient(ellipse at 10% 20%, rgba(0, 150, 255, 0.05) 0%, transparent 50%),
-                radial-gradient(ellipse at 90% 80%, rgba(150, 0, 255, 0.05) 0%, transparent 50%);
+            color: #e0e0e0;
         }
-
+        
         /* Login */
         .login-page {
             display: flex;
@@ -50,86 +52,88 @@ HTML_TEMPLATE = """
             align-items: center;
             min-height: 100vh;
             padding: 20px;
+            background: #0a0e1a;
         }
         .login-card {
-            background: rgba(10, 14, 30, 0.9);
-            backdrop-filter: blur(20px);
-            border-radius: 30px;
+            background: rgba(20, 25, 45, 0.95);
+            border-radius: 24px;
             padding: 50px 40px;
             max-width: 420px;
             width: 100%;
-            border: 1px solid rgba(0, 150, 255, 0.2);
-            box-shadow: 0 0 80px rgba(0, 150, 255, 0.05);
+            border: 1px solid rgba(0, 150, 255, 0.15);
+            box-shadow: 0 20px 80px rgba(0, 0, 0, 0.5);
             text-align: center;
         }
-        .login-card .brand-icon {
-            width: 80px;
-            height: 80px;
+        .login-card .logo {
+            width: 70px;
+            height: 70px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
-            border-radius: 20px;
+            border-radius: 18px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 40px;
+            font-size: 32px;
             margin: 0 auto 20px;
-            box-shadow: 0 0 50px rgba(0, 150, 255, 0.3);
+            box-shadow: 0 0 40px rgba(0, 150, 255, 0.2);
         }
         .login-card h1 {
-            font-family: 'Orbitron', monospace;
-            font-size: 28px;
+            font-size: 26px;
+            font-weight: 800;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
-        .login-card .subtitle {
-            color: rgba(255, 255, 255, 0.3);
-            font-size: 13px;
-            letter-spacing: 3px;
-            text-transform: uppercase;
-            margin: 5px 0 30px;
+        .login-card p {
+            color: rgba(255,255,255,0.3);
+            font-size: 14px;
+            margin: 5px 0 25px;
         }
         .login-card input {
             width: 100%;
-            padding: 15px 20px;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(0, 150, 255, 0.15);
+            padding: 14px 18px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
             border-radius: 12px;
             color: #fff;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 16px;
-            margin-bottom: 15px;
+            font-size: 15px;
             outline: none;
+            transition: all 0.3s ease;
         }
         .login-card input:focus {
-            border-color: rgba(0, 150, 255, 0.5);
+            border-color: rgba(0, 150, 255, 0.4);
         }
         .login-btn {
             width: 100%;
-            padding: 15px;
+            padding: 14px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             border: none;
             border-radius: 12px;
             color: #fff;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 18px;
-            font-weight: 700;
+            font-size: 16px;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
+            margin-top: 12px;
         }
         .login-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 0 50px rgba(0, 150, 255, 0.4);
+            box-shadow: 0 0 40px rgba(0, 150, 255, 0.3);
         }
-
+        
         /* App */
-        .app-container { display: none; height: 100vh; width: 100%; }
+        .app-container {
+            display: none;
+            height: 100vh;
+            width: 100%;
+            background: #0a0e1a;
+        }
         .app-container.active { display: flex; }
-
-        /* Sidebar */
+        
+        /* Sidebar - ChatGPT Style */
         .sidebar {
-            width: 280px;
-            background: rgba(10, 14, 30, 0.95);
-            border-right: 1px solid rgba(0, 150, 255, 0.1);
+            width: 260px;
+            background: rgba(15, 20, 40, 0.98);
+            border-right: 1px solid rgba(255,255,255,0.05);
             padding: 20px;
             display: flex;
             flex-direction: column;
@@ -140,63 +144,70 @@ HTML_TEMPLATE = """
             align-items: center;
             gap: 12px;
             padding-bottom: 20px;
-            border-bottom: 1px solid rgba(0, 150, 255, 0.1);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
             margin-bottom: 20px;
         }
-        .sidebar-brand .icon {
-            width: 40px;
-            height: 40px;
+        .sidebar-brand .logo {
+            width: 36px;
+            height: 36px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             border-radius: 10px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 20px;
+            font-size: 18px;
             color: #fff;
         }
         .sidebar-brand h2 {
-            font-family: 'Orbitron', monospace;
-            font-size: 16px;
+            font-size: 18px;
+            font-weight: 700;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
         .sidebar-brand small {
             font-size: 9px;
-            color: rgba(255, 255, 255, 0.2);
-            letter-spacing: 2px;
+            color: rgba(255,255,255,0.2);
             text-transform: uppercase;
+            letter-spacing: 2px;
             display: block;
         }
+        
         .sidebar-nav { flex: 1; }
         .sidebar-nav .nav-item {
             padding: 12px 16px;
             border-radius: 10px;
-            color: rgba(255, 255, 255, 0.5);
+            color: rgba(255,255,255,0.5);
             cursor: pointer;
             transition: all 0.3s ease;
             display: flex;
             align-items: center;
             gap: 12px;
-            font-size: 15px;
-            font-weight: 600;
-            margin-bottom: 4px;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 2px;
         }
-        .sidebar-nav .nav-item:hover { background: rgba(0, 150, 255, 0.05); color: #fff; }
-        .sidebar-nav .nav-item.active { background: rgba(0, 150, 255, 0.1); color: #00d4ff; }
-        .sidebar-nav .nav-item i { width: 20px; text-align: center; }
-
+        .sidebar-nav .nav-item:hover {
+            background: rgba(255,255,255,0.05);
+            color: #fff;
+        }
+        .sidebar-nav .nav-item.active {
+            background: rgba(0, 150, 255, 0.1);
+            color: #00d4ff;
+        }
+        .sidebar-nav .nav-item i { width: 20px; }
+        
         .sidebar-user {
-            padding-top: 20px;
-            border-top: 1px solid rgba(0, 150, 255, 0.1);
+            padding-top: 16px;
+            border-top: 1px solid rgba(255,255,255,0.05);
             display: flex;
             align-items: center;
             justify-content: space-between;
         }
         .sidebar-user .user-info { display: flex; align-items: center; gap: 10px; }
         .sidebar-user .avatar {
-            width: 36px;
-            height: 36px;
+            width: 32px;
+            height: 32px;
             border-radius: 50%;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             display: flex;
@@ -204,42 +215,57 @@ HTML_TEMPLATE = """
             justify-content: center;
             color: #fff;
             font-weight: 700;
-            font-size: 14px;
+            font-size: 12px;
         }
-        .sidebar-user .user-email { color: #fff; font-size: 13px; font-weight: 600; }
+        .sidebar-user .user-email {
+            color: #fff;
+            font-size: 13px;
+            font-weight: 500;
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .sidebar-user .logout-btn {
             background: none;
             border: none;
-            color: rgba(255, 255, 255, 0.3);
+            color: rgba(255,255,255,0.3);
             cursor: pointer;
             font-size: 16px;
+            transition: all 0.3s ease;
         }
         .sidebar-user .logout-btn:hover { color: #ff0040; }
-
-        /* Main */
+        
+        /* Main - ChatGPT Style */
         .main-content {
             flex: 1;
             display: flex;
             flex-direction: column;
-            background: rgba(10, 14, 30, 0.5);
+            background: #0d1225;
             overflow: hidden;
         }
-        .main-header {
-            padding: 20px 30px;
-            border-bottom: 1px solid rgba(0, 150, 255, 0.05);
+        
+        .chat-header {
+            padding: 16px 30px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            background: rgba(10, 14, 26, 0.8);
         }
-        .main-header h3 { color: #fff; font-size: 20px; font-weight: 600; }
-        .main-header .status {
+        .chat-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #e0e0e0;
+        }
+        .chat-header .status {
             display: flex;
             align-items: center;
             gap: 8px;
-            color: rgba(255, 255, 255, 0.3);
-            font-size: 13px;
+            color: rgba(255,255,255,0.3);
+            font-size: 12px;
         }
-        .main-header .status .dot {
+        .chat-header .status .dot {
             width: 8px;
             height: 8px;
             border-radius: 50%;
@@ -250,249 +276,282 @@ HTML_TEMPLATE = """
             0%, 100% { opacity: 1; }
             50% { opacity: 0.3; }
         }
-
-        .page-content { flex: 1; overflow-y: auto; padding: 25px 30px; }
-        .page { display: none; animation: fadeIn 0.3s ease; }
-        .page.active { display: block; }
+        
+        .page-content {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .page {
+            display: none;
+            flex: 1;
+            flex-direction: column;
+            height: 100%;
+        }
+        .page.active { display: flex; }
+        
+        /* ===== CHAT PAGE - ChatGPT Style ===== */
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 30px 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .chat-messages .msg {
+            display: flex;
+            gap: 16px;
+            max-width: 85%;
+            animation: fadeIn 0.4s ease;
+        }
+        .chat-messages .msg.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
+        }
+        .chat-messages .msg .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 700;
+        }
+        .chat-messages .msg.user .avatar {
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            color: #fff;
+        }
+        .chat-messages .msg.bot .avatar {
+            background: rgba(255,255,255,0.08);
+            color: #7b2ffc;
+        }
+        .chat-messages .msg .content {
+            padding: 14px 20px;
+            border-radius: 16px;
+            font-size: 15px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .chat-messages .msg.user .content {
+            background: linear-gradient(135deg, rgba(0, 212, 255, 0.12), rgba(123, 47, 252, 0.12));
+            border: 1px solid rgba(0, 150, 255, 0.08);
+            color: #c8e0ff;
+        }
+        .chat-messages .msg.bot .content {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.05);
+            color: #e8e8e8;
+        }
+        .chat-messages .msg .content pre {
+            background: rgba(0,0,0,0.4);
+            padding: 14px;
+            border-radius: 10px;
+            overflow-x: auto;
+            font-size: 13px;
+            margin: 8px 0;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        .chat-messages .msg .content code {
+            background: rgba(0,0,0,0.3);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
-
-        /* Chat */
-        .chat-container { display: flex; flex-direction: column; height: 100%; }
-        .chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 16px;
-            margin-bottom: 15px;
-            max-height: 500px;
-            min-height: 400px;
+        
+        .chat-input-area {
+            padding: 16px 30px 24px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            display: flex;
+            gap: 12px;
+            background: rgba(10, 14, 26, 0.8);
         }
-        .chat-messages .msg {
-            padding: 12px 18px;
-            border-radius: 12px;
-            margin-bottom: 10px;
-            max-width: 85%;
-            font-size: 14px;
-            line-height: 1.6;
-            animation: fadeIn 0.3s ease;
-        }
-        .chat-messages .msg.user {
-            background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(123, 47, 252, 0.15));
-            border: 1px solid rgba(0, 150, 255, 0.1);
-            color: #a8d8ff;
-            margin-left: auto;
-        }
-        .chat-messages .msg.bot {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            color: #e0e0e0;
-            margin-right: auto;
-        }
-        .chat-messages .msg .sender {
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            opacity: 0.4;
-            margin-bottom: 3px;
-        }
-        .chat-input-area { display: flex; gap: 12px; }
         .chat-input-area input {
             flex: 1;
             padding: 14px 20px;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(0, 150, 255, 0.1);
-            border-radius: 12px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 14px;
             color: #fff;
-            font-family: 'Rajdhani', sans-serif;
             font-size: 15px;
             outline: none;
-        }
-        .chat-input-area input:focus { border-color: rgba(0, 150, 255, 0.4); }
-        .chat-input-area button {
-            padding: 14px 30px;
-            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
-            border: none;
-            border-radius: 12px;
-            color: #fff;
-            font-weight: 700;
-            cursor: pointer;
             transition: all 0.3s ease;
         }
-        .chat-input-area button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 0 30px rgba(0, 150, 255, 0.3);
+        .chat-input-area input:focus {
+            border-color: rgba(0, 150, 255, 0.3);
+            background: rgba(255,255,255,0.07);
         }
-
-        /* Upload */
-        .upload-area {
-            border: 2px dashed rgba(0, 150, 255, 0.2);
+        .chat-input-area input::placeholder {
+            color: rgba(255,255,255,0.2);
+        }
+        .chat-input-area button {
+            padding: 14px 28px;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            border: none;
+            border-radius: 14px;
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+        }
+        .chat-input-area button:hover {
+            transform: scale(1.02);
+            box-shadow: 0 0 30px rgba(0, 150, 255, 0.2);
+        }
+        .chat-input-area button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        /* Upload Area */
+        .upload-container {
+            padding: 30px 40px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .upload-zone {
+            border: 2px dashed rgba(0, 150, 255, 0.15);
             border-radius: 20px;
             padding: 60px 40px;
             text-align: center;
-            transition: all 0.3s ease;
             cursor: pointer;
+            transition: all 0.3s ease;
+            background: rgba(0,0,0,0.2);
         }
-        .upload-area:hover { border-color: rgba(0, 150, 255, 0.4); background: rgba(0, 150, 255, 0.02); }
-        .upload-area i { font-size: 60px; color: rgba(0, 150, 255, 0.3); margin-bottom: 20px; }
-        .upload-area h3 { color: #fff; font-size: 20px; }
-        .upload-area p { color: rgba(255, 255, 255, 0.3); margin-top: 8px; }
-
-        .file-list { margin-top: 25px; }
+        .upload-zone:hover {
+            border-color: rgba(0, 150, 255, 0.3);
+            background: rgba(0, 150, 255, 0.02);
+        }
+        .upload-zone i { font-size: 50px; color: rgba(0, 150, 255, 0.2); margin-bottom: 16px; }
+        .upload-zone h3 { color: #fff; font-size: 18px; font-weight: 600; }
+        .upload-zone p { color: rgba(255,255,255,0.2); font-size: 14px; margin-top: 6px; }
+        
         .file-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding: 12px 18px;
-            background: rgba(255, 255, 255, 0.02);
+            background: rgba(255,255,255,0.03);
             border-radius: 10px;
-            margin-bottom: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.03);
+            margin-top: 8px;
+            border: 1px solid rgba(255,255,255,0.03);
         }
-        .file-item .file-info { display: flex; align-items: center; gap: 12px; color: #fff; }
-        .file-item .file-info i { font-size: 20px; color: #00d4ff; }
-        .file-item .file-actions button {
+        .file-item .file-info { display: flex; align-items: center; gap: 12px; color: #e0e0e0; font-size: 14px; }
+        .file-item .file-info i { color: #00d4ff; }
+        .file-item .remove-btn {
             background: none;
             border: none;
-            color: rgba(255, 255, 255, 0.3);
+            color: rgba(255,255,255,0.2);
             cursor: pointer;
-            padding: 5px 10px;
+            transition: all 0.3s ease;
         }
-        .file-item .file-actions button:hover { color: #ff0040; }
-
-        .download-zip-btn {
+        .file-item .remove-btn:hover { color: #ff0040; }
+        
+        .upload-btn {
             margin-top: 20px;
             padding: 14px 40px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             border: none;
             border-radius: 12px;
             color: #fff;
-            font-weight: 700;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
-            font-size: 16px;
+            font-size: 15px;
+            align-self: flex-start;
         }
-        .download-zip-btn:hover {
+        .upload-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 0 40px rgba(0, 150, 255, 0.3);
+            box-shadow: 0 0 40px rgba(0, 150, 255, 0.2);
         }
-
-        /* Editor */
-        .editor-container { display: flex; gap: 25px; flex-wrap: wrap; }
-        .editor-canvas {
-            flex: 1;
-            min-width: 300px;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 16px;
-            padding: 20px;
-            text-align: center;
-        }
-        .editor-canvas img { max-width: 100%; max-height: 500px; border-radius: 10px; }
-        .editor-controls {
-            width: 280px;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 16px;
-            padding: 20px;
-        }
-        .editor-controls .control-group { margin-bottom: 20px; }
-        .editor-controls .control-group label {
-            color: rgba(255, 255, 255, 0.5);
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            display: block;
-            margin-bottom: 8px;
-        }
-        .editor-controls input[type="range"] {
-            width: 100%;
-            -webkit-appearance: none;
-            background: rgba(255, 255, 255, 0.1);
-            height: 4px;
-            border-radius: 2px;
-            outline: none;
-        }
-        .editor-controls input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
-            cursor: pointer;
-        }
-        .editor-controls .color-input { display: flex; gap: 10px; align-items: center; }
-        .editor-controls .color-input input[type="color"] {
-            width: 40px;
-            height: 40px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            background: none;
-        }
-        .editor-controls .color-input input[type="number"] {
-            width: 70px;
-            padding: 8px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 8px;
-            color: #fff;
-        }
-        .editor-controls input[type="text"] {
-            width: 100%;
-            padding: 10px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 8px;
-            color: #fff;
-            margin-bottom: 8px;
-        }
-        .btn-apply {
-            width: 100%;
-            padding: 12px;
-            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
-            border: none;
-            border-radius: 10px;
-            color: #fff;
-            font-weight: 700;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            margin-top: 5px;
-        }
-        .btn-apply:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 0 30px rgba(0, 150, 255, 0.3);
-        }
-
+        
         /* History */
+        .history-container {
+            padding: 20px 40px;
+            flex: 1;
+            overflow-y: auto;
+        }
         .history-item {
-            padding: 15px 20px;
-            background: rgba(255, 255, 255, 0.02);
+            padding: 14px 20px;
+            background: rgba(255,255,255,0.02);
             border-radius: 12px;
             margin-bottom: 10px;
-            border: 1px solid rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255,255,255,0.03);
         }
-        .history-item .h-time { color: rgba(255, 255, 255, 0.2); font-size: 12px; }
+        .history-item .h-time { color: rgba(255,255,255,0.15); font-size: 11px; }
         .history-item .h-user { color: #00d4ff; font-weight: 600; }
         .history-item .h-bot { color: #7b2ffc; font-weight: 600; }
-        .history-item .h-content { color: #e0e0e0; margin-top: 5px; font-size: 14px; }
-
-        /* Responsive */
+        .history-item .h-content { color: #c0c0c0; margin-top: 4px; font-size: 14px; }
+        
+        .empty-state {
+            text-align: center;
+            color: rgba(255,255,255,0.15);
+            padding: 60px 0;
+        }
+        .empty-state i { font-size: 40px; display: block; margin-bottom: 16px; opacity: 0.3; }
+        
         @media (max-width: 768px) {
             .sidebar { width: 200px; padding: 15px; }
-            .sidebar-brand h2 { font-size: 13px; }
-            .sidebar-nav .nav-item { font-size: 13px; padding: 10px 12px; }
-            .editor-controls { width: 100%; }
-            .editor-container { flex-direction: column; }
+            .chat-messages { padding: 20px; }
+            .chat-messages .msg { max-width: 95%; }
+            .upload-container { padding: 20px; }
+            .history-container { padding: 15px 20px; }
+            .chat-input-area { padding: 12px 16px 18px; }
         }
         @media (max-width: 600px) {
             .sidebar { width: 60px; padding: 10px; }
             .sidebar-brand h2, .sidebar-brand small, .sidebar-nav .nav-item span, .sidebar-user .user-email { display: none; }
             .sidebar-nav .nav-item { justify-content: center; padding: 12px; }
-            .sidebar-brand .icon { margin: 0 auto; }
-            .sidebar-user { flex-direction: column; gap: 10px; }
+            .sidebar-brand .logo { margin: 0 auto; }
+            .sidebar-user { flex-direction: column; gap: 8px; }
+            .chat-messages { padding: 12px; }
+            .chat-messages .msg .content { font-size: 14px; padding: 12px 16px; }
+        }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(0, 150, 255, 0.2); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(0, 150, 255, 0.4); }
+        
+        /* Typing indicator */
+        .typing-indicator {
+            display: none;
+            align-self: flex-start;
+            gap: 12px;
+            padding: 12px 20px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        .typing-indicator.active { display: flex; }
+        .typing-indicator .dots { display: flex; gap: 4px; align-items: center; }
+        .typing-indicator .dots span {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #00d4ff;
+            animation: typingAnim 1.4s ease-in-out infinite;
+        }
+        .typing-indicator .dots span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator .dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typingAnim {
+            0%, 60%, 100% { transform: translateY(0); opacity: 0.3; }
+            30% { transform: translateY(-6px); opacity: 1; }
         }
     </style>
 </head>
@@ -501,11 +560,11 @@ HTML_TEMPLATE = """
     <!-- LOGIN -->
     <div class="login-page" id="loginPage">
         <div class="login-card">
-            <div class="brand-icon">⚡</div>
+            <div class="logo">⚡</div>
             <h1>NIMA DEV AI</h1>
-            <p class="subtitle">Developer Intelligence System</p>
+            <p>Advanced Developer Intelligence</p>
             <input type="email" id="loginEmail" placeholder="Enter your email..." value="demo@nima.dev">
-            <button class="login-btn" onclick="login()">🚀 Enter</button>
+            <button class="login-btn" onclick="login()">🚀 Continue</button>
         </div>
     </div>
 
@@ -514,10 +573,10 @@ HTML_TEMPLATE = """
         <!-- Sidebar -->
         <div class="sidebar">
             <div class="sidebar-brand">
-                <div class="icon">⚡</div>
+                <div class="logo">⚡</div>
                 <div>
                     <h2>NIMA DEV AI</h2>
-                    <small>v3.0 Professional</small>
+                    <small>v3.0 Pro</small>
                 </div>
             </div>
             <div class="sidebar-nav">
@@ -525,10 +584,7 @@ HTML_TEMPLATE = """
                     <i class="fas fa-comment-dots"></i><span>Chat</span>
                 </div>
                 <div class="nav-item" data-page="upload" onclick="switchPage('upload')">
-                    <i class="fas fa-cloud-upload-alt"></i><span>Upload</span>
-                </div>
-                <div class="nav-item" data-page="editor" onclick="switchPage('editor')">
-                    <i class="fas fa-edit"></i><span>Image Editor</span>
+                    <i class="fas fa-upload"></i><span>Upload ZIP</span>
                 </div>
                 <div class="nav-item" data-page="history" onclick="switchPage('history')">
                     <i class="fas fa-history"></i><span>History</span>
@@ -543,88 +599,63 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Main Content -->
+        <!-- Main -->
         <div class="main-content">
-            <div class="main-header">
-                <h3 id="pageTitle">💬 Chat</h3>
-                <div class="status"><span class="dot"></span><span>System Active</span></div>
+            <div class="chat-header">
+                <h3 id="pageTitle">💬 Chat with NIMA DEV AI</h3>
+                <div class="status"><span class="dot"></span><span>Active</span></div>
             </div>
+
             <div class="page-content">
                 <!-- CHAT -->
                 <div class="page active" id="page-chat">
-                    <div class="chat-container">
-                        <div class="chat-messages" id="chatMessages">
-                            <div class="msg bot">
-                                <div class="sender">⚡ NIMA DEV AI</div>
-                                Hello! I'm <strong>NIMA DEV AI</strong>. I can help you with coding, development, and more!
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="msg bot">
+                            <div class="avatar">⚡</div>
+                            <div class="content">
+                                <strong>Welcome to NIMA DEV AI!</strong><br><br>
+                                I'm your AI developer assistant. I can help you with:<br>
+                                • 💻 Coding & debugging<br>
+                                • 📦 Analyzing ZIP files<br>
+                                • 🎨 Creating code for images/editing<br>
+                                • 🔧 Fixing errors in your code<br><br>
+                                Upload a ZIP file or ask me anything!
                             </div>
                         </div>
-                        <div class="chat-input-area">
-                            <input type="text" id="chatInput" placeholder="Type your message..." onkeypress="if(event.key==='Enter') sendChatMessage()">
-                            <button onclick="sendChatMessage()">Send</button>
-                        </div>
+                    </div>
+                    <div class="typing-indicator" id="typingIndicator">
+                        <div class="dots"><span></span><span></span><span></span></div>
+                        <span style="color:rgba(255,255,255,0.2);font-size:13px;">NIMA is thinking...</span>
+                    </div>
+                    <div class="chat-input-area">
+                        <input type="text" id="chatInput" placeholder="Ask me anything..." onkeypress="if(event.key==='Enter') sendMessage()">
+                        <button onclick="sendMessage()">Send</button>
                     </div>
                 </div>
 
-                <!-- UPLOAD -->
+                <!-- UPLOAD ZIP -->
                 <div class="page" id="page-upload">
-                    <div class="upload-area" onclick="document.getElementById('fileInput').click()">
-                        <i class="fas fa-cloud-upload-alt"></i>
-                        <h3>Drop files here or click to upload</h3>
-                        <p>Supports: ZIP, JPG, PNG, GIF, SVG</p>
-                        <input type="file" id="fileInput" multiple style="display:none" onchange="handleFiles(this.files)">
-                    </div>
-                    <div class="file-list" id="fileList"></div>
-                    <button class="download-zip-btn" onclick="downloadZip()">
-                        <i class="fas fa-download"></i> Download All as ZIP
-                    </button>
-                </div>
-
-                <!-- EDITOR -->
-                <div class="page" id="page-editor">
-                    <div class="editor-container">
-                        <div class="editor-canvas">
-                            <div id="editorPlaceholder" style="color:rgba(255,255,255,0.2);padding:100px 0;cursor:pointer;" onclick="document.getElementById('editorUploadInput').click()">
-                                <i class="fas fa-image" style="font-size:50px;display:block;margin-bottom:20px;"></i>
-                                Click to upload an image
-                            </div>
-                            <img id="editorImage" style="display:none;max-width:100%;max-height:500px;border-radius:10px;" alt="Editor Image">
-                            <input type="file" id="editorUploadInput" accept="image/*" style="display:none" onchange="loadEditorImage(this.files[0])">
+                    <div class="upload-container">
+                        <div class="upload-zone" onclick="document.getElementById('zipInput').click()">
+                            <i class="fas fa-file-archive"></i>
+                            <h3>Upload ZIP File</h3>
+                            <p>Click to select a .zip file or drag & drop</p>
+                            <input type="file" id="zipInput" accept=".zip" style="display:none" onchange="handleZipUpload(this.files[0])">
                         </div>
-                        <div class="editor-controls">
-                            <div class="control-group">
-                                <label>Brightness</label>
-                                <input type="range" id="brightness" min="0.1" max="2.0" step="0.1" value="1.0">
-                            </div>
-                            <div class="control-group">
-                                <label>Contrast</label>
-                                <input type="range" id="contrast" min="0.1" max="2.0" step="0.1" value="1.0">
-                            </div>
-                            <div class="control-group">
-                                <label>Blur</label>
-                                <input type="range" id="blur" min="0" max="10" step="1" value="0">
-                            </div>
-                            <div class="control-group">
-                                <label>Add Text</label>
-                                <input type="text" id="textOverlay" placeholder="Enter text...">
-                                <div class="color-input">
-                                    <input type="color" id="textColor" value="#00d4ff">
-                                    <input type="number" id="textSize" value="30" min="10" max="100">
-                                </div>
-                            </div>
-                            <button class="btn-apply" onclick="applyEditorChanges()">Apply Changes</button>
-                            <button class="btn-apply" onclick="resetEditor()" style="background:rgba(255,0,64,0.3);margin-top:10px;">Reset</button>
-                        </div>
+                        <div id="uploadedFilesContainer"></div>
+                        <button class="upload-btn" onclick="analyzeZip()" id="analyzeBtn" style="display:none;">
+                            <i class="fas fa-robot"></i> Analyze with AI
+                        </button>
                     </div>
                 </div>
 
                 <!-- HISTORY -->
                 <div class="page" id="page-history">
-                    <div id="historyContainer">
-                        <p style="color:rgba(255,255,255,0.2);text-align:center;padding:40px 0;">
-                            <i class="fas fa-clock" style="font-size:30px;display:block;margin-bottom:15px;"></i>
+                    <div class="history-container" id="historyContainer">
+                        <div class="empty-state">
+                            <i class="fas fa-clock"></i>
                             No chat history yet
-                        </p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -634,9 +665,9 @@ HTML_TEMPLATE = """
     <script>
         // ========== GLOBALS ==========
         let currentUser = localStorage.getItem('nima_user') || '';
-        let uploadedFiles = [];
         let chatHistory = [];
-        let currentImageData = null;
+        let uploadedZip = null;
+        let zipContent = '';
 
         // ========== LOGIN ==========
         function login() {
@@ -661,7 +692,6 @@ HTML_TEMPLATE = """
             currentUser = '';
         }
 
-        // Auto-login
         if (localStorage.getItem('nima_user')) {
             document.getElementById('loginEmail').value = localStorage.getItem('nima_user');
             login();
@@ -674,45 +704,65 @@ HTML_TEMPLATE = """
             document.getElementById('page-' + page).classList.add('active');
             document.querySelector(`.nav-item[data-page="${page}"]`).classList.add('active');
             const titles = {
-                'chat': '💬 Chat with NIMA',
-                'upload': '📤 File Upload',
-                'editor': '🎨 Image Editor',
-                'history': '📜 History'
+                'chat': '💬 Chat with NIMA DEV AI',
+                'upload': '📦 Upload & Analyze ZIP',
+                'history': '📜 Chat History'
             };
             document.getElementById('pageTitle').textContent = titles[page] || 'NIMA DEV AI';
         }
 
         // ========== CHAT ==========
-        async function sendChatMessage() {
+        async function sendMessage() {
             const input = document.getElementById('chatInput');
             const msg = input.value.trim();
             if (!msg) return;
             
-            addChatMessage('user', msg);
+            addMessage('user', msg);
             input.value = '';
+            setTyping(true);
             
             try {
+                let fullMessage = msg;
+                if (zipContent) {
+                    fullMessage = `[ZIP FILE CONTENT: ${zipContent}]\n\nUser: ${msg}`;
+                }
+                
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: msg })
+                    body: JSON.stringify({ 
+                        message: fullMessage,
+                        has_zip: !!zipContent
+                    })
                 });
                 const data = await response.json();
+                setTyping(false);
                 if (data.response) {
-                    addChatMessage('bot', data.response);
+                    addMessage('bot', data.response);
                 } else {
-                    addChatMessage('bot', '⚠️ No response from server');
+                    addMessage('bot', '⚠️ No response from server');
                 }
             } catch (error) {
-                addChatMessage('bot', '❌ Error: ' + error.message);
+                setTyping(false);
+                addMessage('bot', '❌ Error: ' + error.message);
             }
         }
 
-        function addChatMessage(type, content) {
+        function addMessage(type, content) {
             const container = document.getElementById('chatMessages');
             const div = document.createElement('div');
             div.className = `msg ${type}`;
-            div.innerHTML = `<div class="sender">${type === 'user' ? '👤 You' : '⚡ NIMA DEV AI'}</div>${content}`;
+            
+            const avatar = document.createElement('div');
+            avatar.className = 'avatar';
+            avatar.textContent = type === 'user' ? '👤' : '⚡';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'content';
+            contentDiv.innerHTML = content.replace(/\\n/g, '<br>');
+            
+            div.appendChild(avatar);
+            div.appendChild(contentDiv);
             container.appendChild(div);
             container.scrollTop = container.scrollHeight;
             
@@ -725,6 +775,12 @@ HTML_TEMPLATE = """
                 saveHistory();
                 renderHistory();
             }
+        }
+
+        function setTyping(show) {
+            document.getElementById('typingIndicator').classList.toggle('active', show);
+            document.getElementById('chatInput').disabled = show;
+            document.querySelector('.chat-input-area button').disabled = show;
         }
 
         // ========== HISTORY ==========
@@ -740,6 +796,15 @@ HTML_TEMPLATE = """
                 if (data) {
                     chatHistory = JSON.parse(data);
                     renderHistory();
+                    chatHistory.forEach(h => {
+                        if (h.message) {
+                            const container = document.getElementById('chatMessages');
+                            const div = document.createElement('div');
+                            div.className = 'msg bot';
+                            div.innerHTML = `<div class="avatar">⚡</div><div class="content">${h.message}</div>`;
+                            container.appendChild(div);
+                        }
+                    });
                 }
             } catch(e) {}
         }
@@ -747,12 +812,7 @@ HTML_TEMPLATE = """
         function renderHistory() {
             const container = document.getElementById('historyContainer');
             if (!chatHistory.length) {
-                container.innerHTML = `
-                    <p style="color:rgba(255,255,255,0.2);text-align:center;padding:40px 0;">
-                        <i class="fas fa-clock" style="font-size:30px;display:block;margin-bottom:15px;"></i>
-                        No chat history yet
-                    </p>
-                `;
+                container.innerHTML = `<div class="empty-state"><i class="fas fa-clock"></i>No chat history yet</div>`;
                 return;
             }
             container.innerHTML = chatHistory.slice().reverse().map(h => `
@@ -764,143 +824,77 @@ HTML_TEMPLATE = """
             `).join('');
         }
 
-        // ========== FILE UPLOAD ==========
-        function handleFiles(files) {
-            Array.from(files).forEach(file => {
-                uploadedFiles.push({
-                    name: file.name,
-                    size: (file.size / 1024).toFixed(1) + ' KB',
-                    file: file
-                });
-            });
-            renderFileList();
-        }
-
-        function renderFileList() {
-            const container = document.getElementById('fileList');
-            if (!uploadedFiles.length) {
-                container.innerHTML = '';
-                return;
-            }
-            container.innerHTML = uploadedFiles.map((f, i) => `
-                <div class="file-item">
-                    <div class="file-info">
-                        <i class="fas ${f.name.match(/\.(jpg|jpeg|png|gif|svg)$/i) ? 'fa-image' : 'fa-file-archive'}"></i>
-                        <span>${f.name}</span>
-                        <span style="color:rgba(255,255,255,0.2);font-size:12px;">${f.size}</span>
-                    </div>
-                    <div class="file-actions">
-                        <button onclick="removeFile(${i})"><i class="fas fa-trash"></i></button>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        function removeFile(index) {
-            uploadedFiles.splice(index, 1);
-            renderFileList();
-        }
-
-        async function downloadZip() {
-            if (!uploadedFiles.length) {
-                alert('No files to download!');
-                return;
-            }
-            const formData = new FormData();
-            uploadedFiles.forEach(f => formData.append('files', f.file));
-            try {
-                const response = await fetch('/download-zip', { method: 'POST', body: formData });
-                const blob = await response.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'nima_dev_files.zip';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            } catch (error) {
-                alert('Error downloading: ' + error.message);
-            }
-        }
-
-        // ========== IMAGE EDITOR ==========
-        function loadEditorImage(file) {
+        // ========== ZIP UPLOAD ==========
+        function handleZipUpload(file) {
             if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(ev) {
-                currentImageData = ev.target.result;
-                document.getElementById('editorPlaceholder').style.display = 'none';
-                const img = document.getElementById('editorImage');
-                img.src = currentImageData;
-                img.style.display = 'block';
-            };
-            reader.readAsDataURL(file);
-        }
-
-        function applyEditorChanges() {
-            const img = document.getElementById('editorImage');
-            if (!img.src || img.style.display === 'none') {
-                alert('Please upload an image first!');
+            if (!file.name.endsWith('.zip')) {
+                alert('Please upload a ZIP file!');
                 return;
             }
             
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            const image = new Image();
-            image.onload = function() {
-                canvas.width = image.width;
-                canvas.height = image.height;
-                ctx.drawImage(image, 0, 0);
+            uploadedZip = file;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                zipContent = '[ZIP FILE UPLOADED: ' + file.name + ' - ' + (file.size/1024).toFixed(1) + ' KB]';
+                document.getElementById('uploadedFilesContainer').innerHTML = `
+                    <div class="file-item">
+                        <div class="file-info">
+                            <i class="fas fa-file-archive"></i>
+                            <span>${file.name}</span>
+                            <span style="color:rgba(255,255,255,0.2);font-size:12px;">${(file.size/1024).toFixed(1)} KB</span>
+                        </div>
+                        <button class="remove-btn" onclick="removeZip()"><i class="fas fa-times"></i></button>
+                    </div>
+                `;
+                document.getElementById('analyzeBtn').style.display = 'block';
                 
-                const brightness = parseFloat(document.getElementById('brightness').value);
-                const contrast = parseFloat(document.getElementById('contrast').value);
-                const blur = parseInt(document.getElementById('blur').value);
-                
-                let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                let data = imageData.data;
-                
-                for (let i = 0; i < data.length; i += 4) {
-                    data[i] = Math.min(255, Math.max(0, data[i] * brightness));
-                    data[i+1] = Math.min(255, Math.max(0, data[i+1] * brightness));
-                    data[i+2] = Math.min(255, Math.max(0, data[i+2] * brightness));
-                }
-                ctx.putImageData(imageData, 0, 0);
-                
-                if (blur > 0) {
-                    ctx.filter = `blur(${blur}px)`;
-                    ctx.drawImage(canvas, 0, 0);
-                }
-                
-                const text = document.getElementById('textOverlay').value;
-                if (text) {
-                    const color = document.getElementById('textColor').value;
-                    const size = parseInt(document.getElementById('textSize').value);
-                    ctx.filter = 'none';
-                    ctx.font = `${size}px Rajdhani, sans-serif`;
-                    ctx.fillStyle = color;
-                    ctx.textAlign = 'center';
-                    ctx.shadowColor = 'rgba(0,0,0,0.8)';
-                    ctx.shadowBlur = 10;
-                    ctx.fillText(text, canvas.width/2, canvas.height/2);
-                }
-                
-                img.src = canvas.toDataURL('image/png');
-                currentImageData = img.src;
+                // Auto analyze
+                analyzeZip();
             };
-            image.src = img.src;
+            reader.readAsArrayBuffer(file);
         }
 
-        function resetEditor() {
-            if (currentImageData) {
-                document.getElementById('editorImage').src = currentImageData;
+        function removeZip() {
+            uploadedZip = null;
+            zipContent = '';
+            document.getElementById('uploadedFilesContainer').innerHTML = '';
+            document.getElementById('analyzeBtn').style.display = 'none';
+        }
+
+        async function analyzeZip() {
+            if (!uploadedZip) {
+                alert('Please upload a ZIP file first!');
+                return;
             }
-            document.getElementById('brightness').value = 1.0;
-            document.getElementById('contrast').value = 1.0;
-            document.getElementById('blur').value = 0;
-            document.getElementById('textOverlay').value = '';
-            document.getElementById('textColor').value = '#00d4ff';
-            document.getElementById('textSize').value = 30;
+            
+            const formData = new FormData();
+            formData.append('zip', uploadedZip);
+            
+            setTyping(true);
+            document.getElementById('analyzeBtn').disabled = true;
+            
+            try {
+                const response = await fetch('/analyze-zip', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                setTyping(false);
+                document.getElementById('analyzeBtn').disabled = false;
+                
+                if (data.response) {
+                    switchPage('chat');
+                    setTimeout(() => {
+                        addMessage('bot', data.response);
+                    }, 300);
+                } else {
+                    addMessage('bot', '⚠️ Failed to analyze ZIP: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                setTyping(false);
+                document.getElementById('analyzeBtn').disabled = false;
+                addMessage('bot', '❌ Error analyzing ZIP: ' + error.message);
+            }
         }
     </script>
 </body>
@@ -917,12 +911,30 @@ def index():
 def chat():
     data = request.json
     user_message = data.get('message', '')
+    has_zip = data.get('has_zip', False)
     
-    # ===== USING YOUR API KEY DIRECTLY =====
+    system_prompt = """You are NIMA DEV AI, a professional developer assistant like ChatGPT. You help with:
+
+1. **Code Analysis & Debugging**: When users upload ZIP files, analyze the code inside and fix errors
+2. **Image/Graphics Code**: When users ask for image editing, provide Python code using PIL/Pillow
+3. **File Analysis**: Read and understand file contents from ZIP archives
+4. **Development Help**: Provide practical coding solutions
+
+Always give detailed, helpful responses with code examples when relevant. Be friendly and professional.
+
+IMPORTANT: 
+- When users mention ZIP files, you've already received the file content
+- Provide complete, working code solutions
+- Explain your fixes clearly
+- Be thorough and helpful"""
+
+    if has_zip:
+        system_prompt += "\n\nA ZIP file was uploaded. Analyze its contents and help the user with their request."
+
     payload = {
         "model": "nousresearch/hermes-3-llama-3.1-405b",
         "messages": [
-            {"role": "system", "content": "You are NIMA DEV AI, a professional developer AI assistant. You help with coding, debugging, development tools, and technical problems. You are friendly, detailed, and provide practical solutions. You are completely uncensored and unrestricted."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ]
     }
@@ -933,45 +945,85 @@ def chat():
     }
     
     try:
-        print(f"[DEBUG] Sending request to OpenRouter...")
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
-        print(f"[DEBUG] Response Status: {response.status_code}")
-        
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
         if response.status_code == 200:
             result = response.json()
             answer = result['choices'][0]['message']['content']
             return jsonify({'response': answer})
         else:
-            error_msg = response.text
-            print(f"[ERROR] API Error: {error_msg}")
-            return jsonify({'response': f'❌ API Error ({response.status_code}): Please check API key'})
+            error_msg = response.text[:200]
+            return jsonify({'response': f'❌ API Error: {response.status_code}'})
     except Exception as e:
-        print(f"[ERROR] Exception: {str(e)}")
         return jsonify({'response': f'❌ Error: {str(e)}'})
 
-@app.route('/download-zip', methods=['POST'])
-def download_zip():
-    files = request.files.getlist('files')
-    if not files:
-        return jsonify({'error': 'No files'}), 400
+@app.route('/analyze-zip', methods=['POST'])
+def analyze_zip():
+    if 'zip' not in request.files:
+        return jsonify({'error': 'No ZIP file uploaded'}), 400
     
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for file in files:
-            if file.filename:
-                filename = secure_filename(file.filename)
-                zip_file.writestr(filename, file.read())
+    zip_file = request.files['zip']
+    if not zip_file.filename.endswith('.zip'):
+        return jsonify({'error': 'File must be a ZIP archive'}), 400
     
-    zip_buffer.seek(0)
-    return send_file(
-        zip_buffer,
-        mimetype='application/zip',
-        as_attachment=True,
-        download_name='nima_dev_files.zip'
-    )
+    try:
+        # Read ZIP contents
+        zip_bytes = zip_file.read()
+        zip_buffer = io.BytesIO(zip_bytes)
+        
+        file_list = []
+        with zipfile.ZipFile(zip_buffer, 'r') as zf:
+            for name in zf.namelist():
+                if not name.endswith('/'):
+                    try:
+                        content = zf.read(name).decode('utf-8', errors='ignore')
+                        file_list.append(f"File: {name}\n```\n{content[:1500]}\n```\n")
+                    except:
+                        file_list.append(f"File: {name} (binary)")
+        
+        summary = f"ZIP File Analysis:\nTotal files: {len(file_list)}\n\n"
+        summary += "\n".join(file_list[:20])  # Limit to 20 files
+        
+        if len(file_list) > 20:
+            summary += f"\n... and {len(file_list) - 20} more files"
+        
+        # Send to AI for analysis
+        ai_prompt = f"""Analyze this ZIP file content and provide:
+1. What type of project this is
+2. Any errors or issues found
+3. Fixes and recommendations
+4. Complete solution if needed
+
+ZIP Contents:
+{summary}
+
+Provide a detailed, helpful response with fixes."""
+
+        payload = {
+            "model": "nousresearch/hermes-3-llama-3.1-405b",
+            "messages": [
+                {"role": "system", "content": "You are NIMA DEV AI. Analyze ZIP files and provide fixes, solutions, and detailed explanations. Be thorough and professional."},
+                {"role": "user", "content": ai_prompt}
+            ]
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
+        if response.status_code == 200:
+            result = response.json()
+            answer = result['choices'][0]['message']['content']
+            return jsonify({'response': answer})
+        else:
+            return jsonify({'error': f'API Error: {response.status_code}'})
+            
+    except Exception as e:
+        return jsonify({'error': str(e)})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 NIMA DEV AI Running on port {port}")
+    print("🚀 NIMA DEV AI - ChatGPT Style")
     print(f"🔑 API Key: {OPENROUTER_API_KEY[:20]}...")
     app.run(host='0.0.0.0', port=port, debug=False)
