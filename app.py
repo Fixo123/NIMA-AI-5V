@@ -1,24 +1,25 @@
 import os
 import json
 import zipfile
-import shutil
+import io
+import base64
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, send_file, session
 from werkzeug.utils import secure_filename
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
-import io
-import base64
 
 app = Flask(__name__)
 app.secret_key = 'nima_dev_ai_secret_key_2026'
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB limit
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
-# Create upload folder
+# Create folders
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs('history', exist_ok=True)
 
+# ===== YOUR API KEY - DIRECTLY EMBEDDED =====
+OPENROUTER_API_KEY = "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"
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # ============ HTML TEMPLATE ============
@@ -32,12 +33,7 @@ HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             background: #0a0e1a;
             font-family: 'Rajdhani', sans-serif;
@@ -47,7 +43,7 @@ HTML_TEMPLATE = """
                 radial-gradient(ellipse at 90% 80%, rgba(150, 0, 255, 0.05) 0%, transparent 50%);
         }
 
-        /* ====== LOGIN PAGE ====== */
+        /* Login */
         .login-page {
             display: flex;
             justify-content: center;
@@ -55,7 +51,6 @@ HTML_TEMPLATE = """
             min-height: 100vh;
             padding: 20px;
         }
-
         .login-card {
             background: rgba(10, 14, 30, 0.9);
             backdrop-filter: blur(20px);
@@ -67,7 +62,6 @@ HTML_TEMPLATE = """
             box-shadow: 0 0 80px rgba(0, 150, 255, 0.05);
             text-align: center;
         }
-
         .login-card .brand-icon {
             width: 80px;
             height: 80px;
@@ -80,24 +74,20 @@ HTML_TEMPLATE = """
             margin: 0 auto 20px;
             box-shadow: 0 0 50px rgba(0, 150, 255, 0.3);
         }
-
         .login-card h1 {
             font-family: 'Orbitron', monospace;
             font-size: 28px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            margin-bottom: 5px;
         }
-
         .login-card .subtitle {
             color: rgba(255, 255, 255, 0.3);
             font-size: 13px;
             letter-spacing: 3px;
             text-transform: uppercase;
-            margin-bottom: 30px;
+            margin: 5px 0 30px;
         }
-
         .login-card input {
             width: 100%;
             padding: 15px 20px;
@@ -108,19 +98,11 @@ HTML_TEMPLATE = """
             font-family: 'Rajdhani', sans-serif;
             font-size: 16px;
             margin-bottom: 15px;
-            transition: all 0.3s ease;
             outline: none;
         }
-
         .login-card input:focus {
             border-color: rgba(0, 150, 255, 0.5);
-            box-shadow: 0 0 30px rgba(0, 150, 255, 0.05);
         }
-
-        .login-card input::placeholder {
-            color: rgba(255, 255, 255, 0.2);
-        }
-
         .login-btn {
             width: 100%;
             padding: 15px;
@@ -133,32 +115,15 @@ HTML_TEMPLATE = """
             font-weight: 700;
             cursor: pointer;
             transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 2px;
         }
-
         .login-btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 0 50px rgba(0, 150, 255, 0.4);
         }
 
-        .login-error {
-            color: #ff0040;
-            font-size: 14px;
-            margin-top: 10px;
-            display: none;
-        }
-
-        /* ====== MAIN APP ====== */
-        .app-container {
-            display: none;
-            height: 100vh;
-            width: 100%;
-        }
-
-        .app-container.active {
-            display: flex;
-        }
+        /* App */
+        .app-container { display: none; height: 100vh; width: 100%; }
+        .app-container.active { display: flex; }
 
         /* Sidebar */
         .sidebar {
@@ -170,7 +135,6 @@ HTML_TEMPLATE = """
             flex-direction: column;
             flex-shrink: 0;
         }
-
         .sidebar-brand {
             display: flex;
             align-items: center;
@@ -179,7 +143,6 @@ HTML_TEMPLATE = """
             border-bottom: 1px solid rgba(0, 150, 255, 0.1);
             margin-bottom: 20px;
         }
-
         .sidebar-brand .icon {
             width: 40px;
             height: 40px;
@@ -191,7 +154,6 @@ HTML_TEMPLATE = """
             font-size: 20px;
             color: #fff;
         }
-
         .sidebar-brand h2 {
             font-family: 'Orbitron', monospace;
             font-size: 16px;
@@ -199,20 +161,14 @@ HTML_TEMPLATE = """
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
-
         .sidebar-brand small {
             font-size: 9px;
             color: rgba(255, 255, 255, 0.2);
             letter-spacing: 2px;
             text-transform: uppercase;
             display: block;
-            margin-top: -2px;
         }
-
-        .sidebar-nav {
-            flex: 1;
-        }
-
+        .sidebar-nav { flex: 1; }
         .sidebar-nav .nav-item {
             padding: 12px 16px;
             border-radius: 10px;
@@ -226,21 +182,9 @@ HTML_TEMPLATE = """
             font-weight: 600;
             margin-bottom: 4px;
         }
-
-        .sidebar-nav .nav-item:hover {
-            background: rgba(0, 150, 255, 0.05);
-            color: #fff;
-        }
-
-        .sidebar-nav .nav-item.active {
-            background: rgba(0, 150, 255, 0.1);
-            color: #00d4ff;
-        }
-
-        .sidebar-nav .nav-item i {
-            width: 20px;
-            text-align: center;
-        }
+        .sidebar-nav .nav-item:hover { background: rgba(0, 150, 255, 0.05); color: #fff; }
+        .sidebar-nav .nav-item.active { background: rgba(0, 150, 255, 0.1); color: #00d4ff; }
+        .sidebar-nav .nav-item i { width: 20px; text-align: center; }
 
         .sidebar-user {
             padding-top: 20px;
@@ -249,13 +193,7 @@ HTML_TEMPLATE = """
             align-items: center;
             justify-content: space-between;
         }
-
-        .sidebar-user .user-info {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
+        .sidebar-user .user-info { display: flex; align-items: center; gap: 10px; }
         .sidebar-user .avatar {
             width: 36px;
             height: 36px;
@@ -268,27 +206,17 @@ HTML_TEMPLATE = """
             font-weight: 700;
             font-size: 14px;
         }
-
-        .sidebar-user .user-email {
-            color: #fff;
-            font-size: 13px;
-            font-weight: 600;
-        }
-
+        .sidebar-user .user-email { color: #fff; font-size: 13px; font-weight: 600; }
         .sidebar-user .logout-btn {
             background: none;
             border: none;
             color: rgba(255, 255, 255, 0.3);
             cursor: pointer;
             font-size: 16px;
-            transition: all 0.3s ease;
         }
+        .sidebar-user .logout-btn:hover { color: #ff0040; }
 
-        .sidebar-user .logout-btn:hover {
-            color: #ff0040;
-        }
-
-        /* Main Content */
+        /* Main */
         .main-content {
             flex: 1;
             display: flex;
@@ -296,7 +224,6 @@ HTML_TEMPLATE = """
             background: rgba(10, 14, 30, 0.5);
             overflow: hidden;
         }
-
         .main-header {
             padding: 20px 30px;
             border-bottom: 1px solid rgba(0, 150, 255, 0.05);
@@ -304,13 +231,7 @@ HTML_TEMPLATE = """
             justify-content: space-between;
             align-items: center;
         }
-
-        .main-header h3 {
-            color: #fff;
-            font-size: 20px;
-            font-weight: 600;
-        }
-
+        .main-header h3 { color: #fff; font-size: 20px; font-weight: 600; }
         .main-header .status {
             display: flex;
             align-items: center;
@@ -318,7 +239,6 @@ HTML_TEMPLATE = """
             color: rgba(255, 255, 255, 0.3);
             font-size: 13px;
         }
-
         .main-header .status .dot {
             width: 8px;
             height: 8px;
@@ -326,40 +246,21 @@ HTML_TEMPLATE = """
             background: #00ff88;
             animation: blink 1.5s ease-in-out infinite;
         }
-
         @keyframes blink {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.3; }
         }
 
-        /* Page Content */
-        .page-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 25px 30px;
-        }
-
-        .page {
-            display: none;
-            animation: fadeIn 0.3s ease;
-        }
-
-        .page.active {
-            display: block;
-        }
-
+        .page-content { flex: 1; overflow-y: auto; padding: 25px 30px; }
+        .page { display: none; animation: fadeIn 0.3s ease; }
+        .page.active { display: block; }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
 
-        /* ====== CHAT PAGE ====== */
-        .chat-container {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-        }
-
+        /* Chat */
+        .chat-container { display: flex; flex-direction: column; height: 100%; }
         .chat-messages {
             flex: 1;
             overflow-y: auto;
@@ -368,8 +269,8 @@ HTML_TEMPLATE = """
             border-radius: 16px;
             margin-bottom: 15px;
             max-height: 500px;
+            min-height: 400px;
         }
-
         .chat-messages .msg {
             padding: 12px 18px;
             border-radius: 12px;
@@ -379,21 +280,18 @@ HTML_TEMPLATE = """
             line-height: 1.6;
             animation: fadeIn 0.3s ease;
         }
-
         .chat-messages .msg.user {
             background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(123, 47, 252, 0.15));
             border: 1px solid rgba(0, 150, 255, 0.1);
             color: #a8d8ff;
             margin-left: auto;
         }
-
         .chat-messages .msg.bot {
             background: rgba(255, 255, 255, 0.03);
             border: 1px solid rgba(255, 255, 255, 0.05);
             color: #e0e0e0;
             margin-right: auto;
         }
-
         .chat-messages .msg .sender {
             font-size: 10px;
             font-weight: 700;
@@ -402,12 +300,7 @@ HTML_TEMPLATE = """
             opacity: 0.4;
             margin-bottom: 3px;
         }
-
-        .chat-input-area {
-            display: flex;
-            gap: 12px;
-        }
-
+        .chat-input-area { display: flex; gap: 12px; }
         .chat-input-area input {
             flex: 1;
             padding: 14px 20px;
@@ -419,11 +312,7 @@ HTML_TEMPLATE = """
             font-size: 15px;
             outline: none;
         }
-
-        .chat-input-area input:focus {
-            border-color: rgba(0, 150, 255, 0.4);
-        }
-
+        .chat-input-area input:focus { border-color: rgba(0, 150, 255, 0.4); }
         .chat-input-area button {
             padding: 14px 30px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
@@ -434,13 +323,12 @@ HTML_TEMPLATE = """
             cursor: pointer;
             transition: all 0.3s ease;
         }
-
         .chat-input-area button:hover {
             transform: translateY(-2px);
             box-shadow: 0 0 30px rgba(0, 150, 255, 0.3);
         }
 
-        /* ====== UPLOAD PAGE ====== */
+        /* Upload */
         .upload-area {
             border: 2px dashed rgba(0, 150, 255, 0.2);
             border-radius: 20px;
@@ -449,32 +337,12 @@ HTML_TEMPLATE = """
             transition: all 0.3s ease;
             cursor: pointer;
         }
+        .upload-area:hover { border-color: rgba(0, 150, 255, 0.4); background: rgba(0, 150, 255, 0.02); }
+        .upload-area i { font-size: 60px; color: rgba(0, 150, 255, 0.3); margin-bottom: 20px; }
+        .upload-area h3 { color: #fff; font-size: 20px; }
+        .upload-area p { color: rgba(255, 255, 255, 0.3); margin-top: 8px; }
 
-        .upload-area:hover {
-            border-color: rgba(0, 150, 255, 0.4);
-            background: rgba(0, 150, 255, 0.02);
-        }
-
-        .upload-area i {
-            font-size: 60px;
-            color: rgba(0, 150, 255, 0.3);
-            margin-bottom: 20px;
-        }
-
-        .upload-area h3 {
-            color: #fff;
-            font-size: 20px;
-        }
-
-        .upload-area p {
-            color: rgba(255, 255, 255, 0.3);
-            margin-top: 8px;
-        }
-
-        .file-list {
-            margin-top: 25px;
-        }
-
+        .file-list { margin-top: 25px; }
         .file-item {
             display: flex;
             justify-content: space-between;
@@ -485,31 +353,16 @@ HTML_TEMPLATE = """
             margin-bottom: 8px;
             border: 1px solid rgba(255, 255, 255, 0.03);
         }
-
-        .file-item .file-info {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            color: #fff;
-        }
-
-        .file-item .file-info i {
-            font-size: 20px;
-            color: #00d4ff;
-        }
-
+        .file-item .file-info { display: flex; align-items: center; gap: 12px; color: #fff; }
+        .file-item .file-info i { font-size: 20px; color: #00d4ff; }
         .file-item .file-actions button {
             background: none;
             border: none;
             color: rgba(255, 255, 255, 0.3);
             cursor: pointer;
             padding: 5px 10px;
-            transition: all 0.3s ease;
         }
-
-        .file-item .file-actions button:hover {
-            color: #00d4ff;
-        }
+        .file-item .file-actions button:hover { color: #ff0040; }
 
         .download-zip-btn {
             margin-top: 20px;
@@ -523,19 +376,13 @@ HTML_TEMPLATE = """
             transition: all 0.3s ease;
             font-size: 16px;
         }
-
         .download-zip-btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 0 40px rgba(0, 150, 255, 0.3);
         }
 
-        /* ====== IMAGE EDITOR ====== */
-        .editor-container {
-            display: flex;
-            gap: 25px;
-            flex-wrap: wrap;
-        }
-
+        /* Editor */
+        .editor-container { display: flex; gap: 25px; flex-wrap: wrap; }
         .editor-canvas {
             flex: 1;
             min-width: 300px;
@@ -544,24 +391,14 @@ HTML_TEMPLATE = """
             padding: 20px;
             text-align: center;
         }
-
-        .editor-canvas img {
-            max-width: 100%;
-            max-height: 500px;
-            border-radius: 10px;
-        }
-
+        .editor-canvas img { max-width: 100%; max-height: 500px; border-radius: 10px; }
         .editor-controls {
             width: 280px;
             background: rgba(0, 0, 0, 0.3);
             border-radius: 16px;
             padding: 20px;
         }
-
-        .editor-controls .control-group {
-            margin-bottom: 20px;
-        }
-
+        .editor-controls .control-group { margin-bottom: 20px; }
         .editor-controls .control-group label {
             color: rgba(255, 255, 255, 0.5);
             font-size: 12px;
@@ -570,7 +407,6 @@ HTML_TEMPLATE = """
             display: block;
             margin-bottom: 8px;
         }
-
         .editor-controls input[type="range"] {
             width: 100%;
             -webkit-appearance: none;
@@ -579,7 +415,6 @@ HTML_TEMPLATE = """
             border-radius: 2px;
             outline: none;
         }
-
         .editor-controls input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
             width: 16px;
@@ -588,13 +423,7 @@ HTML_TEMPLATE = """
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             cursor: pointer;
         }
-
-        .editor-controls .color-input {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-
+        .editor-controls .color-input { display: flex; gap: 10px; align-items: center; }
         .editor-controls .color-input input[type="color"] {
             width: 40px;
             height: 40px;
@@ -603,8 +432,24 @@ HTML_TEMPLATE = """
             cursor: pointer;
             background: none;
         }
-
-        .editor-controls .btn-apply {
+        .editor-controls .color-input input[type="number"] {
+            width: 70px;
+            padding: 8px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #fff;
+        }
+        .editor-controls input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .btn-apply {
             width: 100%;
             padding: 12px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
@@ -616,13 +461,12 @@ HTML_TEMPLATE = """
             transition: all 0.3s ease;
             margin-top: 5px;
         }
-
-        .editor-controls .btn-apply:hover {
+        .btn-apply:hover {
             transform: translateY(-2px);
             box-shadow: 0 0 30px rgba(0, 150, 255, 0.3);
         }
 
-        /* ====== HISTORY ====== */
+        /* History */
         .history-item {
             padding: 15px 20px;
             background: rgba(255, 255, 255, 0.02);
@@ -630,102 +474,42 @@ HTML_TEMPLATE = """
             margin-bottom: 10px;
             border: 1px solid rgba(255, 255, 255, 0.03);
         }
+        .history-item .h-time { color: rgba(255, 255, 255, 0.2); font-size: 12px; }
+        .history-item .h-user { color: #00d4ff; font-weight: 600; }
+        .history-item .h-bot { color: #7b2ffc; font-weight: 600; }
+        .history-item .h-content { color: #e0e0e0; margin-top: 5px; font-size: 14px; }
 
-        .history-item .h-time {
-            color: rgba(255, 255, 255, 0.2);
-            font-size: 12px;
-        }
-
-        .history-item .h-user {
-            color: #00d4ff;
-            font-weight: 600;
-        }
-
-        .history-item .h-bot {
-            color: #7b2ffc;
-            font-weight: 600;
-        }
-
-        .history-item .h-content {
-            color: #e0e0e0;
-            margin-top: 5px;
-            font-size: 14px;
-        }
-
-        /* ====== RESPONSIVE ====== */
+        /* Responsive */
         @media (max-width: 768px) {
-            .sidebar {
-                width: 200px;
-                padding: 15px;
-            }
-
-            .sidebar-brand h2 {
-                font-size: 13px;
-            }
-
-            .sidebar-nav .nav-item {
-                font-size: 13px;
-                padding: 10px 12px;
-            }
-
-            .main-header {
-                padding: 15px 20px;
-            }
-
-            .page-content {
-                padding: 15px 20px;
-            }
-
-            .editor-controls {
-                width: 100%;
-            }
-
-            .editor-container {
-                flex-direction: column;
-            }
+            .sidebar { width: 200px; padding: 15px; }
+            .sidebar-brand h2 { font-size: 13px; }
+            .sidebar-nav .nav-item { font-size: 13px; padding: 10px 12px; }
+            .editor-controls { width: 100%; }
+            .editor-container { flex-direction: column; }
         }
-
         @media (max-width: 600px) {
-            .sidebar {
-                width: 60px;
-                padding: 10px;
-            }
-
-            .sidebar-brand h2, .sidebar-brand small, .sidebar-nav .nav-item span, .sidebar-user .user-email {
-                display: none;
-            }
-
-            .sidebar-nav .nav-item {
-                justify-content: center;
-                padding: 12px;
-            }
-
-            .sidebar-brand .icon {
-                margin: 0 auto;
-            }
-
-            .sidebar-user {
-                flex-direction: column;
-                gap: 10px;
-            }
+            .sidebar { width: 60px; padding: 10px; }
+            .sidebar-brand h2, .sidebar-brand small, .sidebar-nav .nav-item span, .sidebar-user .user-email { display: none; }
+            .sidebar-nav .nav-item { justify-content: center; padding: 12px; }
+            .sidebar-brand .icon { margin: 0 auto; }
+            .sidebar-user { flex-direction: column; gap: 10px; }
         }
     </style>
 </head>
 <body>
 
-    <!-- ====== LOGIN PAGE ====== -->
+    <!-- LOGIN -->
     <div class="login-page" id="loginPage">
         <div class="login-card">
             <div class="brand-icon">⚡</div>
             <h1>NIMA DEV AI</h1>
             <p class="subtitle">Developer Intelligence System</p>
-            <input type="email" id="loginEmail" placeholder="Enter your email address..." value="">
+            <input type="email" id="loginEmail" placeholder="Enter your email..." value="demo@nima.dev">
             <button class="login-btn" onclick="login()">🚀 Enter</button>
-            <div class="login-error" id="loginError">Please enter a valid email</div>
         </div>
     </div>
 
-    <!-- ====== MAIN APP ====== -->
+    <!-- MAIN APP -->
     <div class="app-container" id="appContainer">
         <!-- Sidebar -->
         <div class="sidebar">
@@ -736,34 +520,26 @@ HTML_TEMPLATE = """
                     <small>v3.0 Professional</small>
                 </div>
             </div>
-
             <div class="sidebar-nav">
                 <div class="nav-item active" data-page="chat" onclick="switchPage('chat')">
-                    <i class="fas fa-comment-dots"></i>
-                    <span>Chat</span>
+                    <i class="fas fa-comment-dots"></i><span>Chat</span>
                 </div>
                 <div class="nav-item" data-page="upload" onclick="switchPage('upload')">
-                    <i class="fas fa-cloud-upload-alt"></i>
-                    <span>Upload</span>
+                    <i class="fas fa-cloud-upload-alt"></i><span>Upload</span>
                 </div>
                 <div class="nav-item" data-page="editor" onclick="switchPage('editor')">
-                    <i class="fas fa-edit"></i>
-                    <span>Image Editor</span>
+                    <i class="fas fa-edit"></i><span>Image Editor</span>
                 </div>
                 <div class="nav-item" data-page="history" onclick="switchPage('history')">
-                    <i class="fas fa-history"></i>
-                    <span>History</span>
+                    <i class="fas fa-history"></i><span>History</span>
                 </div>
             </div>
-
             <div class="sidebar-user">
                 <div class="user-info">
                     <div class="avatar" id="userAvatar">N</div>
                     <div class="user-email" id="userEmail">user@email.com</div>
                 </div>
-                <button class="logout-btn" onclick="logout()" title="Logout">
-                    <i class="fas fa-sign-out-alt"></i>
-                </button>
+                <button class="logout-btn" onclick="logout()"><i class="fas fa-sign-out-alt"></i></button>
             </div>
         </div>
 
@@ -771,14 +547,10 @@ HTML_TEMPLATE = """
         <div class="main-content">
             <div class="main-header">
                 <h3 id="pageTitle">💬 Chat</h3>
-                <div class="status">
-                    <span class="dot"></span>
-                    <span>System Active</span>
-                </div>
+                <div class="status"><span class="dot"></span><span>System Active</span></div>
             </div>
-
             <div class="page-content">
-                <!-- CHAT PAGE -->
+                <!-- CHAT -->
                 <div class="page active" id="page-chat">
                     <div class="chat-container">
                         <div class="chat-messages" id="chatMessages">
@@ -794,7 +566,7 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- UPLOAD PAGE -->
+                <!-- UPLOAD -->
                 <div class="page" id="page-upload">
                     <div class="upload-area" onclick="document.getElementById('fileInput').click()">
                         <i class="fas fa-cloud-upload-alt"></i>
@@ -808,15 +580,16 @@ HTML_TEMPLATE = """
                     </button>
                 </div>
 
-                <!-- IMAGE EDITOR PAGE -->
+                <!-- EDITOR -->
                 <div class="page" id="page-editor">
                     <div class="editor-container">
                         <div class="editor-canvas">
-                            <div id="editorPlaceholder" style="color:rgba(255,255,255,0.2); padding:100px 0;">
+                            <div id="editorPlaceholder" style="color:rgba(255,255,255,0.2);padding:100px 0;cursor:pointer;" onclick="document.getElementById('editorUploadInput').click()">
                                 <i class="fas fa-image" style="font-size:50px;display:block;margin-bottom:20px;"></i>
-                                Upload an image to edit
+                                Click to upload an image
                             </div>
                             <img id="editorImage" style="display:none;max-width:100%;max-height:500px;border-radius:10px;" alt="Editor Image">
+                            <input type="file" id="editorUploadInput" accept="image/*" style="display:none" onchange="loadEditorImage(this.files[0])">
                         </div>
                         <div class="editor-controls">
                             <div class="control-group">
@@ -833,10 +606,10 @@ HTML_TEMPLATE = """
                             </div>
                             <div class="control-group">
                                 <label>Add Text</label>
-                                <input type="text" id="textOverlay" placeholder="Enter text..." style="width:100%;padding:10px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;margin-bottom:8px;">
+                                <input type="text" id="textOverlay" placeholder="Enter text...">
                                 <div class="color-input">
                                     <input type="color" id="textColor" value="#00d4ff">
-                                    <input type="number" id="textSize" value="30" min="10" max="100" style="width:60px;padding:8px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;">
+                                    <input type="number" id="textSize" value="30" min="10" max="100">
                                 </div>
                             </div>
                             <button class="btn-apply" onclick="applyEditorChanges()">Apply Changes</button>
@@ -845,7 +618,7 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- HISTORY PAGE -->
+                <!-- HISTORY -->
                 <div class="page" id="page-history">
                     <div id="historyContainer">
                         <p style="color:rgba(255,255,255,0.2);text-align:center;padding:40px 0;">
@@ -869,20 +642,15 @@ HTML_TEMPLATE = """
         function login() {
             const email = document.getElementById('loginEmail').value.trim();
             if (!email || !email.includes('@')) {
-                document.getElementById('loginError').style.display = 'block';
+                alert('Please enter a valid email');
                 return;
             }
-            document.getElementById('loginError').style.display = 'none';
-            
             currentUser = email;
             localStorage.setItem('nima_user', email);
-            
             document.getElementById('loginPage').style.display = 'none';
             document.getElementById('appContainer').classList.add('active');
-            
             document.getElementById('userEmail').textContent = email;
             document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
-            
             loadHistory();
         }
 
@@ -893,7 +661,7 @@ HTML_TEMPLATE = """
             currentUser = '';
         }
 
-        // Check if already logged in
+        // Auto-login
         if (localStorage.getItem('nima_user')) {
             document.getElementById('loginEmail').value = localStorage.getItem('nima_user');
             login();
@@ -903,10 +671,8 @@ HTML_TEMPLATE = """
         function switchPage(page) {
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-            
             document.getElementById('page-' + page).classList.add('active');
             document.querySelector(`.nav-item[data-page="${page}"]`).classList.add('active');
-            
             const titles = {
                 'chat': '💬 Chat with NIMA',
                 'upload': '📤 File Upload',
@@ -929,13 +695,14 @@ HTML_TEMPLATE = """
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        message: msg,
-                        user: currentUser
-                    })
+                    body: JSON.stringify({ message: msg })
                 });
                 const data = await response.json();
-                addChatMessage('bot', data.response || 'No response');
+                if (data.response) {
+                    addChatMessage('bot', data.response);
+                } else {
+                    addChatMessage('bot', '⚠️ No response from server');
+                }
             } catch (error) {
                 addChatMessage('bot', '❌ Error: ' + error.message);
             }
@@ -949,7 +716,6 @@ HTML_TEMPLATE = """
             container.appendChild(div);
             container.scrollTop = container.scrollHeight;
             
-            // Save to history
             if (type === 'bot') {
                 chatHistory.push({
                     user: currentUser,
@@ -974,12 +740,6 @@ HTML_TEMPLATE = """
                 if (data) {
                     chatHistory = JSON.parse(data);
                     renderHistory();
-                    // Load last messages
-                    chatHistory.forEach(h => {
-                        if (h.message) {
-                            addChatMessage('bot', h.message);
-                        }
-                    });
                 }
             } catch(e) {}
         }
@@ -995,7 +755,6 @@ HTML_TEMPLATE = """
                 `;
                 return;
             }
-            
             container.innerHTML = chatHistory.slice().reverse().map(h => `
                 <div class="history-item">
                     <div class="h-time">${h.time || 'Just now'}</div>
@@ -1023,7 +782,6 @@ HTML_TEMPLATE = """
                 container.innerHTML = '';
                 return;
             }
-            
             container.innerHTML = uploadedFiles.map((f, i) => `
                 <div class="file-item">
                     <div class="file-info">
@@ -1048,18 +806,10 @@ HTML_TEMPLATE = """
                 alert('No files to download!');
                 return;
             }
-            
             const formData = new FormData();
-            uploadedFiles.forEach(f => {
-                formData.append('files', f.file);
-            });
-            
+            uploadedFiles.forEach(f => formData.append('files', f.file));
             try {
-                const response = await fetch('/download-zip', {
-                    method: 'POST',
-                    body: formData
-                });
-                
+                const response = await fetch('/download-zip', { method: 'POST', body: formData });
                 const blob = await response.blob();
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -1075,36 +825,18 @@ HTML_TEMPLATE = """
         }
 
         // ========== IMAGE EDITOR ==========
-        // Upload image for editing
-        document.addEventListener('DOMContentLoaded', function() {
-            // Add image upload to editor
-            const editorPage = document.getElementById('page-editor');
-            const uploadInput = document.createElement('input');
-            uploadInput.type = 'file';
-            uploadInput.accept = 'image/*';
-            uploadInput.style.display = 'none';
-            uploadInput.id = 'editorUploadInput';
-            uploadInput.onchange = function(e) {
-                const file = e.target.files[0];
-                if (file) {
-                    const reader = new FileReader();
-                    reader.onload = function(ev) {
-                        currentImageData = ev.target.result;
-                        document.getElementById('editorPlaceholder').style.display = 'none';
-                        const img = document.getElementById('editorImage');
-                        img.src = currentImageData;
-                        img.style.display = 'block';
-                    };
-                    reader.readAsDataURL(file);
-                }
+        function loadEditorImage(file) {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                currentImageData = ev.target.result;
+                document.getElementById('editorPlaceholder').style.display = 'none';
+                const img = document.getElementById('editorImage');
+                img.src = currentImageData;
+                img.style.display = 'block';
             };
-            editorPage.appendChild(uploadInput);
-            
-            // Click on placeholder to upload
-            document.getElementById('editorPlaceholder').onclick = function() {
-                document.getElementById('editorUploadInput').click();
-            };
-        });
+            reader.readAsDataURL(file);
+        }
 
         function applyEditorChanges() {
             const img = document.getElementById('editorImage');
@@ -1121,16 +853,13 @@ HTML_TEMPLATE = """
                 canvas.height = image.height;
                 ctx.drawImage(image, 0, 0);
                 
-                // Apply brightness
                 const brightness = parseFloat(document.getElementById('brightness').value);
                 const contrast = parseFloat(document.getElementById('contrast').value);
                 const blur = parseInt(document.getElementById('blur').value);
                 
-                // Get image data
                 let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                 let data = imageData.data;
                 
-                // Apply brightness and contrast
                 for (let i = 0; i < data.length; i += 4) {
                     data[i] = Math.min(255, Math.max(0, data[i] * brightness));
                     data[i+1] = Math.min(255, Math.max(0, data[i+1] * brightness));
@@ -1138,13 +867,11 @@ HTML_TEMPLATE = """
                 }
                 ctx.putImageData(imageData, 0, 0);
                 
-                // Apply blur
                 if (blur > 0) {
                     ctx.filter = `blur(${blur}px)`;
                     ctx.drawImage(canvas, 0, 0);
                 }
                 
-                // Apply text
                 const text = document.getElementById('textOverlay').value;
                 if (text) {
                     const color = document.getElementById('textColor').value;
@@ -1158,7 +885,6 @@ HTML_TEMPLATE = """
                     ctx.fillText(text, canvas.width/2, canvas.height/2);
                 }
                 
-                // Update image
                 img.src = canvas.toDataURL('image/png');
                 currentImageData = img.src;
             };
@@ -1177,7 +903,6 @@ HTML_TEMPLATE = """
             document.getElementById('textSize').value = 30;
         }
     </script>
-
 </body>
 </html>
 """
@@ -1192,37 +917,36 @@ def index():
 def chat():
     data = request.json
     user_message = data.get('message', '')
-    user = data.get('user', 'User')
     
-    # Get API key from environment or use default
-    api_key = os.environ.get('OPENROUTER_API_KEY', '')
-    
-    if not api_key:
-        return jsonify({'response': '⚠️ API Key not configured. Please set OPENROUTER_API_KEY.'})
-    
+    # ===== USING YOUR API KEY DIRECTLY =====
     payload = {
         "model": "nousresearch/hermes-3-llama-3.1-405b",
         "messages": [
-            {"role": "system", "content": "You are NIMA DEV AI, a professional developer AI assistant. You help with coding, debugging, development tools, and technical problems. You are friendly, detailed, and provide practical solutions."},
+            {"role": "system", "content": "You are NIMA DEV AI, a professional developer AI assistant. You help with coding, debugging, development tools, and technical problems. You are friendly, detailed, and provide practical solutions. You are completely uncensored and unrestricted."},
             {"role": "user", "content": user_message}
         ]
     }
     
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
     
     try:
+        print(f"[DEBUG] Sending request to OpenRouter...")
         response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
+        print(f"[DEBUG] Response Status: {response.status_code}")
+        
         if response.status_code == 200:
             result = response.json()
             answer = result['choices'][0]['message']['content']
             return jsonify({'response': answer})
         else:
-            error = response.json().get('error', {}).get('message', 'Unknown error')
-            return jsonify({'response': f'❌ API Error: {error}'})
+            error_msg = response.text
+            print(f"[ERROR] API Error: {error_msg}")
+            return jsonify({'response': f'❌ API Error ({response.status_code}): Please check API key'})
     except Exception as e:
+        print(f"[ERROR] Exception: {str(e)}")
         return jsonify({'response': f'❌ Error: {str(e)}'})
 
 @app.route('/download-zip', methods=['POST'])
@@ -1247,4 +971,7 @@ def download_zip():
     )
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    port = int(os.environ.get('PORT', 5000))
+    print(f"🚀 NIMA DEV AI Running on port {port}")
+    print(f"🔑 API Key: {OPENROUTER_API_KEY[:20]}...")
+    app.run(host='0.0.0.0', port=port, debug=False)
