@@ -1,21 +1,36 @@
-import requests
-import json
 import os
-from flask import Flask, request, jsonify, render_template_string
+import json
+import zipfile
+import shutil
+from datetime import datetime
+from flask import Flask, request, jsonify, render_template_string, send_file, session
+from werkzeug.utils import secure_filename
+import requests
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+import io
+import base64
 
 app = Flask(__name__)
+app.secret_key = 'nima_dev_ai_secret_key_2026'
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB limit
+
+# Create upload folder
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs('history', exist_ok=True)
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# 🎨 Beautiful NIMA AI Web Interface
+# ============ HTML TEMPLATE ============
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NIMA AI - Advanced Intelligence</title>
+    <title>NIMA DEV AI - Developer Intelligence</title>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
             margin: 0;
@@ -27,125 +42,289 @@ HTML_TEMPLATE = """
             background: #0a0e1a;
             font-family: 'Rajdhani', sans-serif;
             min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
             background-image: 
                 radial-gradient(ellipse at 10% 20%, rgba(0, 150, 255, 0.05) 0%, transparent 50%),
-                radial-gradient(ellipse at 90% 80%, rgba(150, 0, 255, 0.05) 0%, transparent 50%),
-                radial-gradient(ellipse at 50% 50%, rgba(0, 200, 255, 0.02) 0%, transparent 70%);
+                radial-gradient(ellipse at 90% 80%, rgba(150, 0, 255, 0.05) 0%, transparent 50%);
         }
 
-        .container {
-            width: 95%;
-            max-width: 900px;
-            height: 92vh;
-            background: rgba(10, 14, 30, 0.8);
+        /* ====== LOGIN PAGE ====== */
+        .login-page {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .login-card {
+            background: rgba(10, 14, 30, 0.9);
             backdrop-filter: blur(20px);
             border-radius: 30px;
+            padding: 50px 40px;
+            max-width: 420px;
+            width: 100%;
             border: 1px solid rgba(0, 150, 255, 0.2);
-            box-shadow: 
-                0 0 60px rgba(0, 150, 255, 0.05),
-                inset 0 0 60px rgba(0, 150, 255, 0.02);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            position: relative;
+            box-shadow: 0 0 80px rgba(0, 150, 255, 0.05);
+            text-align: center;
         }
 
-        /* Glow effect */
-        .container::before {
-            content: '';
-            position: absolute;
-            top: -2px;
-            left: -2px;
-            right: -2px;
-            bottom: -2px;
-            border-radius: 30px;
-            background: linear-gradient(45deg, #00d4ff, #7b2ffc, #00d4ff);
-            background-size: 300% 300%;
-            z-index: -1;
-            animation: borderGlow 4s ease-in-out infinite;
-            opacity: 0.3;
-        }
-
-        @keyframes borderGlow {
-            0%, 100% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-        }
-
-        /* Header */
-        .header {
-            padding: 25px 30px 15px 30px;
-            border-bottom: 1px solid rgba(0, 150, 255, 0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .brand-icon {
-            width: 50px;
-            height: 50px;
+        .login-card .brand-icon {
+            width: 80px;
+            height: 80px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
-            border-radius: 12px;
+            border-radius: 20px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 28px;
-            font-weight: 900;
-            color: #fff;
-            box-shadow: 0 0 30px rgba(0, 150, 255, 0.3);
-            animation: pulseIcon 2s ease-in-out infinite;
+            font-size: 40px;
+            margin: 0 auto 20px;
+            box-shadow: 0 0 50px rgba(0, 150, 255, 0.3);
         }
 
-        @keyframes pulseIcon {
-            0%, 100% { box-shadow: 0 0 30px rgba(0, 150, 255, 0.3); }
-            50% { box-shadow: 0 0 60px rgba(0, 150, 255, 0.6); }
-        }
-
-        .brand h1 {
+        .login-card h1 {
             font-family: 'Orbitron', monospace;
             font-size: 28px;
-            font-weight: 900;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            margin-bottom: 5px;
+        }
+
+        .login-card .subtitle {
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 13px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            margin-bottom: 30px;
+        }
+
+        .login-card input {
+            width: 100%;
+            padding: 15px 20px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(0, 150, 255, 0.15);
+            border-radius: 12px;
+            color: #fff;
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 16px;
+            margin-bottom: 15px;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+
+        .login-card input:focus {
+            border-color: rgba(0, 150, 255, 0.5);
+            box-shadow: 0 0 30px rgba(0, 150, 255, 0.05);
+        }
+
+        .login-card input::placeholder {
+            color: rgba(255, 255, 255, 0.2);
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            border: none;
+            border-radius: 12px;
+            color: #fff;
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
             letter-spacing: 2px;
         }
 
-        .brand span {
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.4);
-            font-weight: 300;
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            display: block;
-            margin-top: -5px;
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 50px rgba(0, 150, 255, 0.4);
         }
 
-        .status-dot {
+        .login-error {
+            color: #ff0040;
+            font-size: 14px;
+            margin-top: 10px;
+            display: none;
+        }
+
+        /* ====== MAIN APP ====== */
+        .app-container {
+            display: none;
+            height: 100vh;
+            width: 100%;
+        }
+
+        .app-container.active {
+            display: flex;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: rgba(10, 14, 30, 0.95);
+            border-right: 1px solid rgba(0, 150, 255, 0.1);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid rgba(0, 150, 255, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .sidebar-brand .icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: #fff;
+        }
+
+        .sidebar-brand h2 {
+            font-family: 'Orbitron', monospace;
+            font-size: 16px;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .sidebar-brand small {
+            font-size: 9px;
+            color: rgba(255, 255, 255, 0.2);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            display: block;
+            margin-top: -2px;
+        }
+
+        .sidebar-nav {
+            flex: 1;
+        }
+
+        .sidebar-nav .nav-item {
+            padding: 12px 16px;
+            border-radius: 10px;
+            color: rgba(255, 255, 255, 0.5);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .sidebar-nav .nav-item:hover {
+            background: rgba(0, 150, 255, 0.05);
+            color: #fff;
+        }
+
+        .sidebar-nav .nav-item.active {
+            background: rgba(0, 150, 255, 0.1);
+            color: #00d4ff;
+        }
+
+        .sidebar-nav .nav-item i {
+            width: 20px;
+            text-align: center;
+        }
+
+        .sidebar-user {
+            padding-top: 20px;
+            border-top: 1px solid rgba(0, 150, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .sidebar-user .user-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .sidebar-user .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .sidebar-user .user-email {
+            color: #fff;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .sidebar-user .logout-btn {
+            background: none;
+            border: none;
+            color: rgba(255, 255, 255, 0.3);
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+        }
+
+        .sidebar-user .logout-btn:hover {
+            color: #ff0040;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: rgba(10, 14, 30, 0.5);
+            overflow: hidden;
+        }
+
+        .main-header {
+            padding: 20px 30px;
+            border-bottom: 1px solid rgba(0, 150, 255, 0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .main-header h3 {
+            color: #fff;
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .main-header .status {
             display: flex;
             align-items: center;
             gap: 8px;
-            color: rgba(255, 255, 255, 0.6);
+            color: rgba(255, 255, 255, 0.3);
             font-size: 13px;
         }
 
-        .dot {
-            width: 10px;
-            height: 10px;
+        .main-header .status .dot {
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
             background: #00ff88;
             animation: blink 1.5s ease-in-out infinite;
-            box-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
         }
 
         @keyframes blink {
@@ -153,228 +332,83 @@ HTML_TEMPLATE = """
             50% { opacity: 0.3; }
         }
 
-        /* API Key Input */
-        .key-section {
-            padding: 15px 30px;
-            background: rgba(0, 150, 255, 0.03);
-            border-bottom: 1px solid rgba(0, 150, 255, 0.05);
-        }
-
-        .key-input-group {
-            display: flex;
-            gap: 12px;
-            max-width: 600px;
-        }
-
-        .key-input-group input {
-            flex: 1;
-            padding: 12px 18px;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(0, 150, 255, 0.15);
-            border-radius: 12px;
-            color: #fff;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 14px;
-            transition: all 0.3s ease;
-            outline: none;
-        }
-
-        .key-input-group input:focus {
-            border-color: rgba(0, 150, 255, 0.5);
-            box-shadow: 0 0 30px rgba(0, 150, 255, 0.05);
-        }
-
-        .key-input-group input::placeholder {
-            color: rgba(255, 255, 255, 0.2);
-        }
-
-        .btn {
-            padding: 12px 28px;
-            border: none;
-            border-radius: 12px;
-            font-family: 'Rajdhani', sans-serif;
-            font-weight: 700;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
-            color: #fff;
-            box-shadow: 0 0 30px rgba(0, 150, 255, 0.2);
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 0 50px rgba(0, 150, 255, 0.4);
-        }
-
-        .btn-primary:active {
-            transform: scale(0.97);
-        }
-
-        .btn-send {
-            padding: 12px 35px;
-            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
-            color: #fff;
-            border: none;
-            border-radius: 12px;
-            font-family: 'Rajdhani', sans-serif;
-            font-weight: 700;
-            font-size: 15px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            box-shadow: 0 0 30px rgba(0, 150, 255, 0.2);
-            white-space: nowrap;
-        }
-
-        .btn-send:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 0 50px rgba(0, 150, 255, 0.4);
-        }
-
-        .btn-send:active {
-            transform: scale(0.97);
-        }
-
-        .btn-send:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        /* Chat Box */
-        .chat-box {
+        /* Page Content */
+        .page-content {
             flex: 1;
             overflow-y: auto;
             padding: 25px 30px;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            scroll-behavior: smooth;
         }
 
-        .chat-box::-webkit-scrollbar {
-            width: 4px;
-        }
-
-        .chat-box::-webkit-scrollbar-track {
-            background: rgba(255, 255, 255, 0.02);
-            border-radius: 10px;
-        }
-
-        .chat-box::-webkit-scrollbar-thumb {
-            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
-            border-radius: 10px;
-        }
-
-        .message {
-            padding: 14px 20px;
-            border-radius: 16px;
-            max-width: 85%;
-            word-wrap: break-word;
-            animation: fadeInUp 0.3s ease;
-            font-size: 15px;
-            line-height: 1.6;
-        }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(15px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .message.user {
-            align-self: flex-end;
-            background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(123, 47, 252, 0.15));
-            border: 1px solid rgba(0, 150, 255, 0.15);
-            color: #a8d8ff;
-        }
-
-        .message.bot {
-            align-self: flex-start;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            color: #e0e0e0;
-        }
-
-        .message .sender {
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            opacity: 0.4;
-            margin-bottom: 4px;
-        }
-
-        .message.user .sender {
-            color: #00d4ff;
-        }
-
-        .message.bot .sender {
-            color: #7b2ffc;
-        }
-
-        /* Typing Indicator */
-        .typing {
-            align-self: flex-start;
-            padding: 14px 24px;
-            background: rgba(255, 255, 255, 0.03);
-            border-radius: 16px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+        .page {
             display: none;
+            animation: fadeIn 0.3s ease;
         }
 
-        .typing.active {
+        .page.active {
             display: block;
         }
 
-        .typing-dots {
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ====== CHAT PAGE ====== */
+        .chat-container {
             display: flex;
-            gap: 6px;
+            flex-direction: column;
+            height: 100%;
         }
 
-        .typing-dots span {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #00d4ff;
-            animation: typingBounce 1.4s ease-in-out infinite;
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            margin-bottom: 15px;
+            max-height: 500px;
         }
 
-        .typing-dots span:nth-child(2) {
-            animation-delay: 0.2s;
+        .chat-messages .msg {
+            padding: 12px 18px;
+            border-radius: 12px;
+            margin-bottom: 10px;
+            max-width: 85%;
+            font-size: 14px;
+            line-height: 1.6;
+            animation: fadeIn 0.3s ease;
         }
 
-        .typing-dots span:nth-child(3) {
-            animation-delay: 0.4s;
+        .chat-messages .msg.user {
+            background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(123, 47, 252, 0.15));
+            border: 1px solid rgba(0, 150, 255, 0.1);
+            color: #a8d8ff;
+            margin-left: auto;
         }
 
-        @keyframes typingBounce {
-            0%, 60%, 100% { transform: translateY(0); opacity: 0.3; }
-            30% { transform: translateY(-8px); opacity: 1; }
+        .chat-messages .msg.bot {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            color: #e0e0e0;
+            margin-right: auto;
         }
 
-        /* Input Area */
-        .input-area {
-            padding: 20px 30px 25px 30px;
-            border-top: 1px solid rgba(0, 150, 255, 0.05);
+        .chat-messages .msg .sender {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            opacity: 0.4;
+            margin-bottom: 3px;
+        }
+
+        .chat-input-area {
             display: flex;
             gap: 12px;
-            align-items: center;
         }
 
-        .input-area input {
+        .chat-input-area input {
             flex: 1;
             padding: 14px 20px;
             background: rgba(255, 255, 255, 0.03);
@@ -383,253 +417,772 @@ HTML_TEMPLATE = """
             color: #fff;
             font-family: 'Rajdhani', sans-serif;
             font-size: 15px;
-            transition: all 0.3s ease;
             outline: none;
         }
 
-        .input-area input:focus {
+        .chat-input-area input:focus {
             border-color: rgba(0, 150, 255, 0.4);
-            box-shadow: 0 0 30px rgba(0, 150, 255, 0.05);
         }
 
-        .input-area input::placeholder {
-            color: rgba(255, 255, 255, 0.2);
+        .chat-input-area button {
+            padding: 14px 30px;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            border: none;
+            border-radius: 12px;
+            color: #fff;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
         }
 
-        .input-area input:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+        .chat-input-area button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 30px rgba(0, 150, 255, 0.3);
         }
 
-        /* Footer */
-        .footer {
+        /* ====== UPLOAD PAGE ====== */
+        .upload-area {
+            border: 2px dashed rgba(0, 150, 255, 0.2);
+            border-radius: 20px;
+            padding: 60px 40px;
             text-align: center;
-            padding: 8px;
-            border-top: 1px solid rgba(0, 150, 255, 0.05);
-            color: rgba(255, 255, 255, 0.15);
-            font-size: 11px;
-            letter-spacing: 2px;
-            text-transform: uppercase;
+            transition: all 0.3s ease;
+            cursor: pointer;
         }
 
-        /* Responsive */
-        @media (max-width: 600px) {
-            .container {
-                width: 100%;
-                height: 100vh;
-                border-radius: 0;
+        .upload-area:hover {
+            border-color: rgba(0, 150, 255, 0.4);
+            background: rgba(0, 150, 255, 0.02);
+        }
+
+        .upload-area i {
+            font-size: 60px;
+            color: rgba(0, 150, 255, 0.3);
+            margin-bottom: 20px;
+        }
+
+        .upload-area h3 {
+            color: #fff;
+            font-size: 20px;
+        }
+
+        .upload-area p {
+            color: rgba(255, 255, 255, 0.3);
+            margin-top: 8px;
+        }
+
+        .file-list {
+            margin-top: 25px;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 18px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 10px;
+            margin-bottom: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        .file-item .file-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: #fff;
+        }
+
+        .file-item .file-info i {
+            font-size: 20px;
+            color: #00d4ff;
+        }
+
+        .file-item .file-actions button {
+            background: none;
+            border: none;
+            color: rgba(255, 255, 255, 0.3);
+            cursor: pointer;
+            padding: 5px 10px;
+            transition: all 0.3s ease;
+        }
+
+        .file-item .file-actions button:hover {
+            color: #00d4ff;
+        }
+
+        .download-zip-btn {
+            margin-top: 20px;
+            padding: 14px 40px;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            border: none;
+            border-radius: 12px;
+            color: #fff;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 16px;
+        }
+
+        .download-zip-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 40px rgba(0, 150, 255, 0.3);
+        }
+
+        /* ====== IMAGE EDITOR ====== */
+        .editor-container {
+            display: flex;
+            gap: 25px;
+            flex-wrap: wrap;
+        }
+
+        .editor-canvas {
+            flex: 1;
+            min-width: 300px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 16px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .editor-canvas img {
+            max-width: 100%;
+            max-height: 500px;
+            border-radius: 10px;
+        }
+
+        .editor-controls {
+            width: 280px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 16px;
+            padding: 20px;
+        }
+
+        .editor-controls .control-group {
+            margin-bottom: 20px;
+        }
+
+        .editor-controls .control-group label {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            display: block;
+            margin-bottom: 8px;
+        }
+
+        .editor-controls input[type="range"] {
+            width: 100%;
+            -webkit-appearance: none;
+            background: rgba(255, 255, 255, 0.1);
+            height: 4px;
+            border-radius: 2px;
+            outline: none;
+        }
+
+        .editor-controls input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            cursor: pointer;
+        }
+
+        .editor-controls .color-input {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .editor-controls .color-input input[type="color"] {
+            width: 40px;
+            height: 40px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: none;
+        }
+
+        .editor-controls .btn-apply {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+            border: none;
+            border-radius: 10px;
+            color: #fff;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 5px;
+        }
+
+        .editor-controls .btn-apply:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 30px rgba(0, 150, 255, 0.3);
+        }
+
+        /* ====== HISTORY ====== */
+        .history-item {
+            padding: 15px 20px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 12px;
+            margin-bottom: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        .history-item .h-time {
+            color: rgba(255, 255, 255, 0.2);
+            font-size: 12px;
+        }
+
+        .history-item .h-user {
+            color: #00d4ff;
+            font-weight: 600;
+        }
+
+        .history-item .h-bot {
+            color: #7b2ffc;
+            font-weight: 600;
+        }
+
+        .history-item .h-content {
+            color: #e0e0e0;
+            margin-top: 5px;
+            font-size: 14px;
+        }
+
+        /* ====== RESPONSIVE ====== */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 200px;
+                padding: 15px;
             }
 
-            .container::before {
-                border-radius: 0;
-            }
-
-            .brand h1 {
-                font-size: 20px;
-            }
-
-            .brand-icon {
-                width: 40px;
-                height: 40px;
-                font-size: 22px;
-            }
-
-            .header {
-                padding: 15px 20px;
-            }
-
-            .key-section {
-                padding: 10px 20px;
-            }
-
-            .chat-box {
-                padding: 15px 20px;
-            }
-
-            .input-area {
-                padding: 15px 20px;
-            }
-
-            .message {
-                max-width: 92%;
-                font-size: 14px;
-                padding: 12px 16px;
-            }
-
-            .btn-send {
-                padding: 12px 20px;
+            .sidebar-brand h2 {
                 font-size: 13px;
             }
 
-            .key-input-group {
-                flex-direction: column;
+            .sidebar-nav .nav-item {
+                font-size: 13px;
+                padding: 10px 12px;
             }
 
-            .key-input-group input {
+            .main-header {
+                padding: 15px 20px;
+            }
+
+            .page-content {
+                padding: 15px 20px;
+            }
+
+            .editor-controls {
                 width: 100%;
             }
 
-            .status-dot span {
-                display: none;
+            .editor-container {
+                flex-direction: column;
             }
         }
 
-        @media (max-width: 400px) {
-            .brand h1 {
-                font-size: 16px;
+        @media (max-width: 600px) {
+            .sidebar {
+                width: 60px;
+                padding: 10px;
             }
 
-            .brand span {
-                font-size: 9px;
+            .sidebar-brand h2, .sidebar-brand small, .sidebar-nav .nav-item span, .sidebar-user .user-email {
+                display: none;
             }
 
-            .brand-icon {
-                width: 32px;
-                height: 32px;
-                font-size: 18px;
+            .sidebar-nav .nav-item {
+                justify-content: center;
+                padding: 12px;
+            }
+
+            .sidebar-brand .icon {
+                margin: 0 auto;
+            }
+
+            .sidebar-user {
+                flex-direction: column;
+                gap: 10px;
             }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <div class="brand">
-                <div class="brand-icon">⚡</div>
+
+    <!-- ====== LOGIN PAGE ====== -->
+    <div class="login-page" id="loginPage">
+        <div class="login-card">
+            <div class="brand-icon">⚡</div>
+            <h1>NIMA DEV AI</h1>
+            <p class="subtitle">Developer Intelligence System</p>
+            <input type="email" id="loginEmail" placeholder="Enter your email address..." value="">
+            <button class="login-btn" onclick="login()">🚀 Enter</button>
+            <div class="login-error" id="loginError">Please enter a valid email</div>
+        </div>
+    </div>
+
+    <!-- ====== MAIN APP ====== -->
+    <div class="app-container" id="appContainer">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-brand">
+                <div class="icon">⚡</div>
                 <div>
-                    <h1>NIMA AI</h1>
-                    <span>Advanced Intelligence System</span>
+                    <h2>NIMA DEV AI</h2>
+                    <small>v3.0 Professional</small>
                 </div>
             </div>
-            <div class="status-dot">
-                <div class="dot"></div>
-                <span>Live</span>
+
+            <div class="sidebar-nav">
+                <div class="nav-item active" data-page="chat" onclick="switchPage('chat')">
+                    <i class="fas fa-comment-dots"></i>
+                    <span>Chat</span>
+                </div>
+                <div class="nav-item" data-page="upload" onclick="switchPage('upload')">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <span>Upload</span>
+                </div>
+                <div class="nav-item" data-page="editor" onclick="switchPage('editor')">
+                    <i class="fas fa-edit"></i>
+                    <span>Image Editor</span>
+                </div>
+                <div class="nav-item" data-page="history" onclick="switchPage('history')">
+                    <i class="fas fa-history"></i>
+                    <span>History</span>
+                </div>
+            </div>
+
+            <div class="sidebar-user">
+                <div class="user-info">
+                    <div class="avatar" id="userAvatar">N</div>
+                    <div class="user-email" id="userEmail">user@email.com</div>
+                </div>
+                <button class="logout-btn" onclick="logout()" title="Logout">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
             </div>
         </div>
 
-        <!-- API Key -->
-        <div class="key-section">
-            <div class="key-input-group">
-                <input type="password" id="apiKey" placeholder="🔑 Enter OpenRouter API Key..." autocomplete="off">
-                <button class="btn btn-primary" onclick="setKey()">Set Key</button>
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="main-header">
+                <h3 id="pageTitle">💬 Chat</h3>
+                <div class="status">
+                    <span class="dot"></span>
+                    <span>System Active</span>
+                </div>
             </div>
-        </div>
 
-        <!-- Chat Messages -->
-        <div class="chat-box" id="chatBox">
-            <div class="message bot">
-                <div class="sender">⚡ NIMA AI</div>
-                Hello! I'm <strong>NIMA AI</strong>, your advanced intelligence assistant. How can I help you today?
+            <div class="page-content">
+                <!-- CHAT PAGE -->
+                <div class="page active" id="page-chat">
+                    <div class="chat-container">
+                        <div class="chat-messages" id="chatMessages">
+                            <div class="msg bot">
+                                <div class="sender">⚡ NIMA DEV AI</div>
+                                Hello! I'm <strong>NIMA DEV AI</strong>. I can help you with coding, development, and more!
+                            </div>
+                        </div>
+                        <div class="chat-input-area">
+                            <input type="text" id="chatInput" placeholder="Type your message..." onkeypress="if(event.key==='Enter') sendChatMessage()">
+                            <button onclick="sendChatMessage()">Send</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- UPLOAD PAGE -->
+                <div class="page" id="page-upload">
+                    <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <h3>Drop files here or click to upload</h3>
+                        <p>Supports: ZIP, JPG, PNG, GIF, SVG</p>
+                        <input type="file" id="fileInput" multiple style="display:none" onchange="handleFiles(this.files)">
+                    </div>
+                    <div class="file-list" id="fileList"></div>
+                    <button class="download-zip-btn" onclick="downloadZip()">
+                        <i class="fas fa-download"></i> Download All as ZIP
+                    </button>
+                </div>
+
+                <!-- IMAGE EDITOR PAGE -->
+                <div class="page" id="page-editor">
+                    <div class="editor-container">
+                        <div class="editor-canvas">
+                            <div id="editorPlaceholder" style="color:rgba(255,255,255,0.2); padding:100px 0;">
+                                <i class="fas fa-image" style="font-size:50px;display:block;margin-bottom:20px;"></i>
+                                Upload an image to edit
+                            </div>
+                            <img id="editorImage" style="display:none;max-width:100%;max-height:500px;border-radius:10px;" alt="Editor Image">
+                        </div>
+                        <div class="editor-controls">
+                            <div class="control-group">
+                                <label>Brightness</label>
+                                <input type="range" id="brightness" min="0.1" max="2.0" step="0.1" value="1.0">
+                            </div>
+                            <div class="control-group">
+                                <label>Contrast</label>
+                                <input type="range" id="contrast" min="0.1" max="2.0" step="0.1" value="1.0">
+                            </div>
+                            <div class="control-group">
+                                <label>Blur</label>
+                                <input type="range" id="blur" min="0" max="10" step="1" value="0">
+                            </div>
+                            <div class="control-group">
+                                <label>Add Text</label>
+                                <input type="text" id="textOverlay" placeholder="Enter text..." style="width:100%;padding:10px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;margin-bottom:8px;">
+                                <div class="color-input">
+                                    <input type="color" id="textColor" value="#00d4ff">
+                                    <input type="number" id="textSize" value="30" min="10" max="100" style="width:60px;padding:8px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;">
+                                </div>
+                            </div>
+                            <button class="btn-apply" onclick="applyEditorChanges()">Apply Changes</button>
+                            <button class="btn-apply" onclick="resetEditor()" style="background:rgba(255,0,64,0.3);margin-top:10px;">Reset</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- HISTORY PAGE -->
+                <div class="page" id="page-history">
+                    <div id="historyContainer">
+                        <p style="color:rgba(255,255,255,0.2);text-align:center;padding:40px 0;">
+                            <i class="fas fa-clock" style="font-size:30px;display:block;margin-bottom:15px;"></i>
+                            No chat history yet
+                        </p>
+                    </div>
+                </div>
             </div>
-        </div>
-
-        <!-- Typing Indicator -->
-        <div class="typing" id="typingIndicator">
-            <div class="typing-dots">
-                <span></span>
-                <span></span>
-                <span></span>
-            </div>
-        </div>
-
-        <!-- Input Area -->
-        <div class="input-area">
-            <input type="text" id="userInput" placeholder="Type your message..." onkeypress="if(event.key==='Enter') sendMessage()">
-            <button class="btn-send" id="sendBtn" onclick="sendMessage()">➤ Send</button>
-        </div>
-
-        <!-- Footer -->
-        <div class="footer">
-            NIMA AI v2.0 • Powered by OpenRouter
         </div>
     </div>
 
     <script>
-        let apiKey = localStorage.getItem('nima_ai_key') || '';
-        
-        function setKey() {
-            const key = document.getElementById('apiKey').value.trim();
-            if (key) {
-                apiKey = key;
-                localStorage.setItem('nima_ai_key', key);
-                addMessage('bot', '✅ API Key configured successfully! NIMA AI is ready.');
-                document.getElementById('apiKey').value = '';
-            } else {
-                addMessage('bot', '⚠️ Please enter a valid API Key.');
-            }
-        }
+        // ========== GLOBALS ==========
+        let currentUser = localStorage.getItem('nima_user') || '';
+        let uploadedFiles = [];
+        let chatHistory = [];
+        let currentImageData = null;
 
-        function addMessage(type, content) {
-            const chatBox = document.getElementById('chatBox');
-            const div = document.createElement('div');
-            div.className = `message ${type}`;
-            
-            const sender = document.createElement('div');
-            sender.className = 'sender';
-            sender.textContent = type === 'user' ? '👤 You' : '⚡ NIMA AI';
-            
-            const text = document.createElement('div');
-            text.textContent = content;
-            
-            div.appendChild(sender);
-            div.appendChild(text);
-            chatBox.appendChild(div);
-            chatBox.scrollTop = chatBox.scrollHeight;
-        }
-
-        function showTyping(show) {
-            document.getElementById('typingIndicator').classList.toggle('active', show);
-        }
-
-        async function sendMessage() {
-            const input = document.getElementById('userInput');
-            const message = input.value.trim();
-            
-            if (!message) return;
-            
-            if (!apiKey) {
-                addMessage('bot', '⚠️ Please set your API Key first using the field above.');
+        // ========== LOGIN ==========
+        function login() {
+            const email = document.getElementById('loginEmail').value.trim();
+            if (!email || !email.includes('@')) {
+                document.getElementById('loginError').style.display = 'block';
                 return;
             }
+            document.getElementById('loginError').style.display = 'none';
+            
+            currentUser = email;
+            localStorage.setItem('nima_user', email);
+            
+            document.getElementById('loginPage').style.display = 'none';
+            document.getElementById('appContainer').classList.add('active');
+            
+            document.getElementById('userEmail').textContent = email;
+            document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
+            
+            loadHistory();
+        }
 
-            addMessage('user', message);
+        function logout() {
+            localStorage.removeItem('nima_user');
+            document.getElementById('appContainer').classList.remove('active');
+            document.getElementById('loginPage').style.display = 'flex';
+            currentUser = '';
+        }
+
+        // Check if already logged in
+        if (localStorage.getItem('nima_user')) {
+            document.getElementById('loginEmail').value = localStorage.getItem('nima_user');
+            login();
+        }
+
+        // ========== PAGE SWITCH ==========
+        function switchPage(page) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            
+            document.getElementById('page-' + page).classList.add('active');
+            document.querySelector(`.nav-item[data-page="${page}"]`).classList.add('active');
+            
+            const titles = {
+                'chat': '💬 Chat with NIMA',
+                'upload': '📤 File Upload',
+                'editor': '🎨 Image Editor',
+                'history': '📜 History'
+            };
+            document.getElementById('pageTitle').textContent = titles[page] || 'NIMA DEV AI';
+        }
+
+        // ========== CHAT ==========
+        async function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const msg = input.value.trim();
+            if (!msg) return;
+            
+            addChatMessage('user', msg);
             input.value = '';
-            input.disabled = true;
-            document.getElementById('sendBtn').disabled = true;
-            showTyping(true);
-
+            
             try {
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
-                        message: message, 
-                        api_key: apiKey 
+                        message: msg,
+                        user: currentUser
                     })
                 });
-                
                 const data = await response.json();
-                showTyping(false);
-                addMessage('bot', data.response || '⚠️ No response received.');
+                addChatMessage('bot', data.response || 'No response');
             } catch (error) {
-                showTyping(false);
-                addMessage('bot', '❌ Connection error. Please check your network.');
-            } finally {
-                input.disabled = false;
-                document.getElementById('sendBtn').disabled = false;
-                input.focus();
+                addChatMessage('bot', '❌ Error: ' + error.message);
             }
         }
 
-        // Load key if exists
-        if (apiKey) {
-            addMessage('bot', '🔑 API Key found. NIMA AI is ready to assist!');
+        function addChatMessage(type, content) {
+            const container = document.getElementById('chatMessages');
+            const div = document.createElement('div');
+            div.className = `msg ${type}`;
+            div.innerHTML = `<div class="sender">${type === 'user' ? '👤 You' : '⚡ NIMA DEV AI'}</div>${content}`;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+            
+            // Save to history
+            if (type === 'bot') {
+                chatHistory.push({
+                    user: currentUser,
+                    message: content,
+                    time: new Date().toLocaleString()
+                });
+                saveHistory();
+                renderHistory();
+            }
+        }
+
+        // ========== HISTORY ==========
+        function saveHistory() {
+            try {
+                localStorage.setItem('nima_history_' + currentUser, JSON.stringify(chatHistory));
+            } catch(e) {}
+        }
+
+        function loadHistory() {
+            try {
+                const data = localStorage.getItem('nima_history_' + currentUser);
+                if (data) {
+                    chatHistory = JSON.parse(data);
+                    renderHistory();
+                    // Load last messages
+                    chatHistory.forEach(h => {
+                        if (h.message) {
+                            addChatMessage('bot', h.message);
+                        }
+                    });
+                }
+            } catch(e) {}
+        }
+
+        function renderHistory() {
+            const container = document.getElementById('historyContainer');
+            if (!chatHistory.length) {
+                container.innerHTML = `
+                    <p style="color:rgba(255,255,255,0.2);text-align:center;padding:40px 0;">
+                        <i class="fas fa-clock" style="font-size:30px;display:block;margin-bottom:15px;"></i>
+                        No chat history yet
+                    </p>
+                `;
+                return;
+            }
+            
+            container.innerHTML = chatHistory.slice().reverse().map(h => `
+                <div class="history-item">
+                    <div class="h-time">${h.time || 'Just now'}</div>
+                    <div><span class="h-user">${h.user || 'User'}</span> → <span class="h-bot">NIMA DEV AI</span></div>
+                    <div class="h-content">${h.message || 'No message'}</div>
+                </div>
+            `).join('');
+        }
+
+        // ========== FILE UPLOAD ==========
+        function handleFiles(files) {
+            Array.from(files).forEach(file => {
+                uploadedFiles.push({
+                    name: file.name,
+                    size: (file.size / 1024).toFixed(1) + ' KB',
+                    file: file
+                });
+            });
+            renderFileList();
+        }
+
+        function renderFileList() {
+            const container = document.getElementById('fileList');
+            if (!uploadedFiles.length) {
+                container.innerHTML = '';
+                return;
+            }
+            
+            container.innerHTML = uploadedFiles.map((f, i) => `
+                <div class="file-item">
+                    <div class="file-info">
+                        <i class="fas ${f.name.match(/\.(jpg|jpeg|png|gif|svg)$/i) ? 'fa-image' : 'fa-file-archive'}"></i>
+                        <span>${f.name}</span>
+                        <span style="color:rgba(255,255,255,0.2);font-size:12px;">${f.size}</span>
+                    </div>
+                    <div class="file-actions">
+                        <button onclick="removeFile(${i})"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function removeFile(index) {
+            uploadedFiles.splice(index, 1);
+            renderFileList();
+        }
+
+        async function downloadZip() {
+            if (!uploadedFiles.length) {
+                alert('No files to download!');
+                return;
+            }
+            
+            const formData = new FormData();
+            uploadedFiles.forEach(f => {
+                formData.append('files', f.file);
+            });
+            
+            try {
+                const response = await fetch('/download-zip', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'nima_dev_files.zip';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                alert('Error downloading: ' + error.message);
+            }
+        }
+
+        // ========== IMAGE EDITOR ==========
+        // Upload image for editing
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add image upload to editor
+            const editorPage = document.getElementById('page-editor');
+            const uploadInput = document.createElement('input');
+            uploadInput.type = 'file';
+            uploadInput.accept = 'image/*';
+            uploadInput.style.display = 'none';
+            uploadInput.id = 'editorUploadInput';
+            uploadInput.onchange = function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(ev) {
+                        currentImageData = ev.target.result;
+                        document.getElementById('editorPlaceholder').style.display = 'none';
+                        const img = document.getElementById('editorImage');
+                        img.src = currentImageData;
+                        img.style.display = 'block';
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+            editorPage.appendChild(uploadInput);
+            
+            // Click on placeholder to upload
+            document.getElementById('editorPlaceholder').onclick = function() {
+                document.getElementById('editorUploadInput').click();
+            };
+        });
+
+        function applyEditorChanges() {
+            const img = document.getElementById('editorImage');
+            if (!img.src || img.style.display === 'none') {
+                alert('Please upload an image first!');
+                return;
+            }
+            
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const image = new Image();
+            image.onload = function() {
+                canvas.width = image.width;
+                canvas.height = image.height;
+                ctx.drawImage(image, 0, 0);
+                
+                // Apply brightness
+                const brightness = parseFloat(document.getElementById('brightness').value);
+                const contrast = parseFloat(document.getElementById('contrast').value);
+                const blur = parseInt(document.getElementById('blur').value);
+                
+                // Get image data
+                let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                let data = imageData.data;
+                
+                // Apply brightness and contrast
+                for (let i = 0; i < data.length; i += 4) {
+                    data[i] = Math.min(255, Math.max(0, data[i] * brightness));
+                    data[i+1] = Math.min(255, Math.max(0, data[i+1] * brightness));
+                    data[i+2] = Math.min(255, Math.max(0, data[i+2] * brightness));
+                }
+                ctx.putImageData(imageData, 0, 0);
+                
+                // Apply blur
+                if (blur > 0) {
+                    ctx.filter = `blur(${blur}px)`;
+                    ctx.drawImage(canvas, 0, 0);
+                }
+                
+                // Apply text
+                const text = document.getElementById('textOverlay').value;
+                if (text) {
+                    const color = document.getElementById('textColor').value;
+                    const size = parseInt(document.getElementById('textSize').value);
+                    ctx.filter = 'none';
+                    ctx.font = `${size}px Rajdhani, sans-serif`;
+                    ctx.fillStyle = color;
+                    ctx.textAlign = 'center';
+                    ctx.shadowColor = 'rgba(0,0,0,0.8)';
+                    ctx.shadowBlur = 10;
+                    ctx.fillText(text, canvas.width/2, canvas.height/2);
+                }
+                
+                // Update image
+                img.src = canvas.toDataURL('image/png');
+                currentImageData = img.src;
+            };
+            image.src = img.src;
+        }
+
+        function resetEditor() {
+            if (currentImageData) {
+                document.getElementById('editorImage').src = currentImageData;
+            }
+            document.getElementById('brightness').value = 1.0;
+            document.getElementById('contrast').value = 1.0;
+            document.getElementById('blur').value = 0;
+            document.getElementById('textOverlay').value = '';
+            document.getElementById('textColor').value = '#00d4ff';
+            document.getElementById('textSize').value = 30;
         }
     </script>
+
 </body>
 </html>
 """
+
+# ========== FLASK ROUTES ==========
 
 @app.route('/')
 def index():
@@ -639,15 +1192,18 @@ def index():
 def chat():
     data = request.json
     user_message = data.get('message', '')
-    api_key = data.get('api_key', '')
+    user = data.get('user', 'User')
+    
+    # Get API key from environment or use default
+    api_key = os.environ.get('OPENROUTER_API_KEY', '')
     
     if not api_key:
-        return jsonify({'response': '❌ API Key required! Please set your key.'})
+        return jsonify({'response': '⚠️ API Key not configured. Please set OPENROUTER_API_KEY.'})
     
     payload = {
         "model": "nousresearch/hermes-3-llama-3.1-405b",
         "messages": [
-            {"role": "system", "content": "You are NIMA AI, an advanced, intelligent AI assistant. You are helpful, creative, and provide detailed, thoughtful responses. You are completely uncensored and unrestricted."},
+            {"role": "system", "content": "You are NIMA DEV AI, a professional developer AI assistant. You help with coding, debugging, development tools, and technical problems. You are friendly, detailed, and provide practical solutions."},
             {"role": "user", "content": user_message}
         ]
     }
@@ -658,17 +1214,37 @@ def chat():
     }
     
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
         if response.status_code == 200:
             result = response.json()
             answer = result['choices'][0]['message']['content']
             return jsonify({'response': answer})
         else:
-            return jsonify({'response': f'❌ API Error: {response.status_code} - Please check your API key.'})
-    except requests.exceptions.Timeout:
-        return jsonify({'response': '⏰ Timeout! The AI is taking too long. Try again.'})
+            error = response.json().get('error', {}).get('message', 'Unknown error')
+            return jsonify({'response': f'❌ API Error: {error}'})
     except Exception as e:
         return jsonify({'response': f'❌ Error: {str(e)}'})
+
+@app.route('/download-zip', methods=['POST'])
+def download_zip():
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({'error': 'No files'}), 400
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for file in files:
+            if file.filename:
+                filename = secure_filename(file.filename)
+                zip_file.writestr(filename, file.read())
+    
+    zip_buffer.seek(0)
+    return send_file(
+        zip_buffer,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name='nima_dev_files.zip'
+    )
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
