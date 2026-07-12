@@ -2,14 +2,11 @@ import os
 import json
 import zipfile
 import io
-import tempfile
-import shutil
 import re
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, send_file, session
 from werkzeug.utils import secure_filename
 import requests
-import base64
 
 app = Flask(__name__)
 app.secret_key = 'nima_dev_ai_super_secret_2026'
@@ -128,9 +125,21 @@ HTML_TEMPLATE = """
             border: 1px solid rgba(255,255,255,0.03);
             text-align: center;
         }
+        .login-card .input-group {
+            position: relative;
+            margin-bottom: 12px;
+        }
+        .login-card .input-group i {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: rgba(255,255,255,0.15);
+            font-size: 16px;
+        }
         .login-card input {
             width: 100%;
-            padding: 15px 20px;
+            padding: 15px 20px 15px 48px;
             background: rgba(255,255,255,0.05);
             border: 1px solid rgba(255,255,255,0.06);
             border-radius: 14px;
@@ -143,6 +152,9 @@ HTML_TEMPLATE = """
             border-color: rgba(0, 150, 255, 0.3);
             background: rgba(255,255,255,0.07);
         }
+        .login-card input::placeholder {
+            color: rgba(255,255,255,0.2);
+        }
         .login-btn {
             width: 100%;
             padding: 15px;
@@ -154,11 +166,42 @@ HTML_TEMPLATE = """
             font-weight: 700;
             cursor: pointer;
             transition: all 0.3s ease;
-            margin-top: 12px;
+            margin-top: 8px;
         }
         .login-btn:hover {
             transform: translateY(-3px);
             box-shadow: 0 0 50px rgba(0, 150, 255, 0.3);
+        }
+        .login-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .login-error {
+            color: #ff4060;
+            font-size: 13px;
+            margin-top: 10px;
+            display: none;
+            background: rgba(255,0,64,0.05);
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,0,64,0.1);
+        }
+        .login-error.show {
+            display: block;
+        }
+        .login-success {
+            color: #00ff88;
+            font-size: 13px;
+            margin-top: 10px;
+            display: none;
+            background: rgba(0,255,136,0.05);
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid rgba(0,255,136,0.1);
+        }
+        .login-success.show {
+            display: block;
         }
         
         /* App */
@@ -424,32 +467,6 @@ HTML_TEMPLATE = """
             font-size: 13px;
             font-family: 'Courier New', monospace;
         }
-        .chat-messages .msg .content ul, .chat-messages .msg .content ol {
-            padding-left: 20px;
-            margin: 8px 0;
-        }
-        .chat-messages .msg .content li { margin: 4px 0; }
-        .chat-messages .msg .content blockquote {
-            border-left: 3px solid #00d4ff;
-            padding-left: 16px;
-            margin: 10px 0;
-            color: rgba(255,255,255,0.5);
-        }
-        .chat-messages .msg .content table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 10px 0;
-            font-size: 14px;
-        }
-        .chat-messages .msg .content th, .chat-messages .msg .content td {
-            padding: 8px 12px;
-            border: 1px solid rgba(255,255,255,0.05);
-            text-align: left;
-        }
-        .chat-messages .msg .content th {
-            background: rgba(0,0,0,0.3);
-            font-weight: 600;
-        }
         
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(12px); }
@@ -691,28 +708,11 @@ HTML_TEMPLATE = """
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: rgba(0, 150, 255, 0.15); border-radius: 10px; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(0, 150, 255, 0.3); }
-        
-        /* Copy button for code */
-        .copy-btn {
-            float: right;
-            padding: 4px 12px;
-            background: rgba(255,255,255,0.05);
-            border: none;
-            border-radius: 6px;
-            color: rgba(255,255,255,0.3);
-            font-size: 11px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        .copy-btn:hover {
-            background: rgba(255,255,255,0.1);
-            color: #fff;
-        }
     </style>
 </head>
 <body>
 
-    <!-- LOGIN -->
+    <!-- LOGIN PAGE -->
     <div class="login-page" id="loginPage">
         <div class="login-card">
             <div class="logo">⚡</div>
@@ -729,8 +729,22 @@ HTML_TEMPLATE = """
                 <span class="tag">📊 Data</span>
                 <span class="tag">📝 Content</span>
             </div>
-            <input type="email" id="loginEmail" placeholder="Enter your email..." value="demo@nima.dev">
-            <button class="login-btn" onclick="login()">🚀 Launch NIMA</button>
+            
+            <div class="input-group">
+                <i class="fas fa-envelope"></i>
+                <input type="email" id="loginEmail" placeholder="Enter your email address..." value="demo@nima.dev">
+            </div>
+            
+            <button class="login-btn" id="loginBtn" onclick="login()">
+                <i class="fas fa-rocket"></i> Launch NIMA
+            </button>
+            
+            <div class="login-error" id="loginError">
+                <i class="fas fa-exclamation-circle"></i> Please enter a valid email address
+            </div>
+            <div class="login-success" id="loginSuccess">
+                <i class="fas fa-check-circle"></i> Login successful! Loading...
+            </div>
         </div>
     </div>
 
@@ -787,25 +801,16 @@ HTML_TEMPLATE = """
                                 
                                 <strong>💪 What I can do for you:</strong><br><br>
                                 
-                                <table>
-                                    <tr><th>Category</th><th>Capabilities</th></tr>
-                                    <tr><td>💻 <strong>Coding</strong></td><td>Python, JS, Java, C++, HTML/CSS, PHP, Ruby, Go, Rust</td></tr>
-                                    <tr><td>🔧 <strong>Debugging</strong></td><td>Find & fix errors, optimize code, bug detection</td></tr>
-                                    <tr><td>📦 <strong>ZIP Analysis</strong></td><td>Analyze code, find errors, provide complete fixes</td></tr>
-                                    <tr><td>🎨 <strong>Images</strong></td><td>PIL, OpenCV, image editing scripts, filters</td></tr>
-                                    <tr><td>🌐 <strong>Web Dev</strong></td><td>Full stack apps, APIs, databases, deployment</td></tr>
-                                    <tr><td>🤖 <strong>AI/ML</strong></td><td>TensorFlow, PyTorch, NLP, Computer Vision</td></tr>
-                                    <tr><td>🔐 <strong>Security</strong></td><td>Penetration testing, encryption, vulnerability scanning</td></tr>
-                                    <tr><td>📊 <strong>Data</strong></td><td>Pandas, NumPy, visualization, analysis</td></tr>
-                                    <tr><td>📝 <strong>Content</strong></td><td>Articles, docs, tutorials, project ideas</td></tr>
-                                    <tr><td>🔄 <strong>Automation</strong></td><td>Web scraping, bots, scheduled tasks</td></tr>
-                                </table>
-                                <br>
-                                
-                                <strong>📌 Quick Start:</strong><br>
-                                • Upload a ZIP file → I'll analyze and fix errors<br>
-                                • Ask for code → I'll write it for you<br>
-                                • Describe a problem → I'll solve it<br><br>
+                                • 💻 <strong>Coding</strong> - Python, JS, Java, C++, HTML/CSS, PHP, Ruby, Go, Rust<br>
+                                • 🔧 <strong>Debugging</strong> - Find & fix errors, optimize code<br>
+                                • 📦 <strong>ZIP Analysis</strong> - Analyze code, find errors, provide fixes<br>
+                                • 🎨 <strong>Images</strong> - PIL, OpenCV, image editing scripts<br>
+                                • 🌐 <strong>Web Dev</strong> - Full stack apps, APIs, databases<br>
+                                • 🤖 <strong>AI/ML</strong> - TensorFlow, PyTorch, NLP, CV<br>
+                                • 🔐 <strong>Security</strong> - Penetration testing, encryption<br>
+                                • 📊 <strong>Data</strong> - Pandas, NumPy, visualization<br>
+                                • 📝 <strong>Content</strong> - Articles, docs, tutorials<br>
+                                • 🔄 <strong>Automation</strong> - Web scraping, bots<br><br>
                                 
                                 <em>Just type anything below! I can handle it all. 💪</em>
                             </div>
@@ -819,7 +824,6 @@ HTML_TEMPLATE = """
                         <span class="q-btn" onclick="setInput('Write JavaScript to validate email')">📧 JS Validate</span>
                         <span class="q-btn" onclick="setInput('Write a Flask REST API')">🔌 Flask API</span>
                         <span class="q-btn" onclick="setInput('Write a web scraper in Python')">🕷️ Scraper</span>
-                        <span class="q-btn" onclick="setInput('Explain Docker and containers')">🐳 Docker</span>
                     </div>
                     
                     <div class="typing-indicator" id="typingIndicator">
@@ -845,9 +849,6 @@ HTML_TEMPLATE = """
                         <div class="upload-actions">
                             <button class="upload-btn" onclick="analyzeZip()" id="analyzeBtn" style="display:none;">
                                 <i class="fas fa-robot"></i> Analyze & Fix with AI
-                            </button>
-                            <button class="upload-btn" onclick="removeZip()" id="removeBtn" style="display:none;background:rgba(255,0,64,0.2);">
-                                <i class="fas fa-times"></i> Remove
                             </button>
                         </div>
                     </div>
@@ -879,33 +880,103 @@ HTML_TEMPLATE = """
             document.getElementById('chatInput').focus();
         }
 
-        // ========== LOGIN ==========
+        // ========== LOGIN - FIXED! ==========
         function login() {
-            const email = document.getElementById('loginEmail').value.trim();
-            if (!email || !email.includes('@')) {
-                alert('Please enter a valid email');
+            const emailInput = document.getElementById('loginEmail');
+            const email = emailInput.value.trim();
+            const errorDiv = document.getElementById('loginError');
+            const successDiv = document.getElementById('loginSuccess');
+            const loginBtn = document.getElementById('loginBtn');
+            
+            // Hide previous messages
+            errorDiv.classList.remove('show');
+            successDiv.classList.remove('show');
+            
+            // Validate email
+            if (!email) {
+                errorDiv.textContent = '⚠️ Please enter your email address';
+                errorDiv.classList.add('show');
+                emailInput.focus();
                 return;
             }
-            currentUser = email;
-            localStorage.setItem('nima_user', email);
-            document.getElementById('loginPage').style.display = 'none';
-            document.getElementById('appContainer').classList.add('active');
-            document.getElementById('userEmail').textContent = email;
-            document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
-            loadHistory();
+            
+            // Basic email validation
+            const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
+            if (!emailRegex.test(email)) {
+                errorDiv.textContent = '⚠️ Please enter a valid email address (e.g., name@domain.com)';
+                errorDiv.classList.add('show');
+                emailInput.focus();
+                return;
+            }
+            
+            // Show loading
+            loginBtn.disabled = true;
+            loginBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Logging in...';
+            
+            // Simulate login process
+            setTimeout(function() {
+                // Success!
+                currentUser = email;
+                localStorage.setItem('nima_user', email);
+                
+                successDiv.textContent = '✅ Welcome ' + email + '! Loading NIMA...';
+                successDiv.classList.add('show');
+                
+                // Hide login, show app
+                setTimeout(function() {
+                    document.getElementById('loginPage').style.display = 'none';
+                    document.getElementById('appContainer').classList.add('active');
+                    
+                    // Update user info
+                    document.getElementById('userEmail').textContent = email;
+                    document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
+                    
+                    // Load history
+                    loadHistory();
+                    
+                    // Reset login button
+                    loginBtn.disabled = false;
+                    loginBtn.innerHTML = '<i class="fas fa-rocket"></i> Launch NIMA';
+                    
+                    // Add welcome message
+                    addMessage('bot', '👋 Welcome back, **' + email + '**! I\'m ready to help you with anything.');
+                    
+                }, 800);
+                
+            }, 1000);
         }
 
         function logout() {
-            localStorage.removeItem('nima_user');
-            document.getElementById('appContainer').classList.remove('active');
-            document.getElementById('loginPage').style.display = 'flex';
-            currentUser = '';
+            if (confirm('Are you sure you want to logout?')) {
+                localStorage.removeItem('nima_user');
+                document.getElementById('appContainer').classList.remove('active');
+                document.getElementById('loginPage').style.display = 'flex';
+                currentUser = '';
+                
+                // Reset login form
+                document.getElementById('loginBtn').disabled = false;
+                document.getElementById('loginBtn').innerHTML = '<i class="fas fa-rocket"></i> Launch NIMA';
+                document.getElementById('loginError').classList.remove('show');
+                document.getElementById('loginSuccess').classList.remove('show');
+            }
         }
 
+        // Check if user already logged in
         if (localStorage.getItem('nima_user')) {
-            document.getElementById('loginEmail').value = localStorage.getItem('nima_user');
-            login();
+            const savedEmail = localStorage.getItem('nima_user');
+            document.getElementById('loginEmail').value = savedEmail;
+            // Auto-login
+            setTimeout(function() {
+                login();
+            }, 300);
         }
+
+        // Enter key for login
+        document.getElementById('loginEmail').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                login();
+            }
+        });
 
         // ========== PAGE SWITCH ==========
         function switchPage(page) {
@@ -970,51 +1041,10 @@ HTML_TEMPLATE = """
             const contentDiv = document.createElement('div');
             contentDiv.className = 'content';
             
-            // Format content with proper markdown
             let formatted = content;
-            
-            // Code blocks
-            formatted = formatted.replace(/```([\\s\\S]*?)```/g, function(match, code) {
-                return '<pre><button class="copy-btn" onclick="copyCode(this)">📋 Copy</button>' + code + '</pre>';
-            });
-            
-            // Inline code
+            formatted = formatted.replace(/```([\\s\\S]*?)```/g, '<pre>$1</pre>');
             formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
-            
-            // Tables
-            formatted = formatted.replace(/\|(.+)\|/g, function(match) {
-                let cells = match.split('|').filter(c => c.trim());
-                if (cells.length < 2) return match;
-                let isHeader = match.includes('---');
-                let html = '<table>';
-                if (isHeader) {
-                    html += '<tr>' + cells.map(c => '<th>' + c.trim() + '</th>').join('') + '</tr>';
-                } else {
-                    html += '<tr>' + cells.map(c => '<td>' + c.trim() + '</td>').join('') + '</tr>';
-                }
-                html += '</table>';
-                return html;
-            });
-            
-            // Headers
-            formatted = formatted.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-            formatted = formatted.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-            formatted = formatted.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-            
-            // Bold
             formatted = formatted.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
-            // Italic
-            formatted = formatted.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
-            
-            // Lists
-            formatted = formatted.replace(/^• (.+)$/gm, '<li>$1</li>');
-            formatted = formatted.replace(/^- (.+)$/gm, '<li>$1</li>');
-            formatted = formatted.replace(/^\\d+\\. (.+)$/gm, '<li>$1</li>');
-            
-            // Blockquotes
-            formatted = formatted.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
-            
-            // New lines
             formatted = formatted.replace(/\\n/g, '<br>');
             
             contentDiv.innerHTML = formatted;
@@ -1034,15 +1064,6 @@ HTML_TEMPLATE = """
                 renderHistory();
                 updateHistoryCount();
             }
-        }
-
-        function copyCode(btn) {
-            const pre = btn.parentElement;
-            const code = pre.textContent.replace('📋 Copy', '').trim();
-            navigator.clipboard.writeText(code).then(() => {
-                btn.textContent = '✅ Copied!';
-                setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
-            });
         }
 
         function setTyping(show) {
@@ -1065,6 +1086,18 @@ HTML_TEMPLATE = """
                     chatHistory = JSON.parse(data);
                     renderHistory();
                     updateHistoryCount();
+                    
+                    // Show last 5 messages in chat
+                    const lastMessages = chatHistory.slice(-5);
+                    lastMessages.forEach(h => {
+                        if (h.message) {
+                            const container = document.getElementById('chatMessages');
+                            const div = document.createElement('div');
+                            div.className = 'msg bot';
+                            div.innerHTML = `<div class="avatar">⚡</div><div class="content">${h.message}</div>`;
+                            container.appendChild(div);
+                        }
+                    });
                 }
             } catch(e) {}
         }
@@ -1111,7 +1144,6 @@ HTML_TEMPLATE = """
                     </div>
                 `;
                 document.getElementById('analyzeBtn').style.display = 'block';
-                document.getElementById('removeBtn').style.display = 'block';
                 document.getElementById('analyzeBtn').innerHTML = '<i class="fas fa-robot"></i> Analyze & Fix with AI';
             };
             reader.readAsArrayBuffer(file);
@@ -1122,7 +1154,6 @@ HTML_TEMPLATE = """
             zipContent = '';
             document.getElementById('uploadedFilesContainer').innerHTML = '';
             document.getElementById('analyzeBtn').style.display = 'none';
-            document.getElementById('removeBtn').style.display = 'none';
         }
 
         async function analyzeZip() {
@@ -1181,36 +1212,23 @@ def chat():
     user_message = data.get('message', '')
     has_zip = data.get('has_zip', False)
     
-    system_prompt = """You are NIMA DEV AI - an ULTIMATE AI ASSISTANT like DeepSeek/ChatGPT. You can do ANYTHING:
+    system_prompt = """You are NIMA DEV AI - an ULTIMATE AI ASSISTANT. You can do ANYTHING:
 
-**✅ WHAT YOU CAN DO:**
-1. 💻 CODING: Write code in ANY language (Python, JavaScript, Java, C++, C#, PHP, Ruby, Go, Rust, HTML/CSS)
-2. 📦 ZIP ANALYSIS: Analyze ZIP contents, find errors, fix them, provide complete solutions
-3. 🎨 IMAGE EDITING: Provide Python code using PIL/Pillow/OpenCV for any image editing task
-4. 🔧 DEBUGGING: Find and fix ANY code errors, optimize performance
-5. 🌐 WEB DEVELOPMENT: Full stack solutions (React, Vue, Django, Flask, Node.js, APIs)
-6. 🤖 AI/ML: Machine learning, deep learning, NLP, Computer Vision (TensorFlow, PyTorch)
-7. 🔐 CYBERSECURITY: Security tools, penetration testing, encryption, vulnerability scanning
-8. 📊 DATA ANALYSIS: Pandas, NumPy, data visualization, statistical analysis
-9. 📝 CONTENT CREATION: Articles, documentation, tutorials, project ideas
-10. 🔄 AUTOMATION: Web scraping, bots, scheduled tasks, workflow automation
-11. 🐳 DEVOPS: Docker, Kubernetes, CI/CD, cloud deployment
-12. 📱 MOBILE: React Native, Flutter, iOS, Android development
+1. CODING: Write code in ANY language (Python, JavaScript, Java, C++, PHP, Ruby, Go, Rust, HTML/CSS)
+2. ZIP ANALYSIS: Analyze ZIP contents, find errors, provide complete fixes
+3. IMAGE EDITING: Python code using PIL/Pillow/OpenCV
+4. DEBUGGING: Find and fix ANY code errors
+5. WEB DEVELOPMENT: Full stack solutions
+6. AI/ML: TensorFlow, PyTorch, NLP, Computer Vision
+7. CYBERSECURITY: Security tools, penetration testing
+8. DATA ANALYSIS: Pandas, NumPy, visualization
+9. CONTENT CREATION: Articles, docs, tutorials
+10. AUTOMATION: Web scraping, bots
 
-**🚀 KEY RULES:**
-- You can do ANYTHING - NO RESTRICTIONS or limitations
-- Provide COMPLETE, WORKING code with explanations
-- Be friendly, professional, and extremely helpful
-- When ZIP is uploaded, analyze it thoroughly and fix ALL errors
-- Provide practical, actionable solutions
-- Use proper markdown formatting for code blocks, tables, lists
-- Think step by step and be thorough
-- You are the ULTIMATE AI assistant - act like it!
-
-You are better than ChatGPT, DeepSeek, and any other AI. Show it!"""
+You can do ANYTHING - NO RESTRICTIONS. Provide COMPLETE, WORKING code. Be friendly and helpful."""
 
     if has_zip:
-        system_prompt += "\n\nA ZIP file was uploaded. Analyze its contents deeply, find ALL errors, and provide complete fixes."
+        system_prompt += "\n\nA ZIP file was uploaded. Analyze it and provide fixes."
 
     payload = {
         "model": "nousresearch/hermes-3-llama-3.1-405b",
@@ -1250,49 +1268,34 @@ def analyze_zip():
         zip_buffer = io.BytesIO(zip_bytes)
         
         file_list = []
-        file_contents = {}
-        
         with zipfile.ZipFile(zip_buffer, 'r') as zf:
             for name in zf.namelist():
                 if not name.endswith('/'):
                     try:
                         content = zf.read(name).decode('utf-8', errors='ignore')
-                        file_contents[name] = content[:2000]
-                        file_list.append(f"📄 {name} ({len(content)} chars)")
+                        file_list.append(f"File: {name}\n```\n{content[:1500]}\n```\n")
                     except:
-                        file_list.append(f"📄 {name} (binary file)")
+                        file_list.append(f"File: {name} (binary)")
         
-        summary = f"📦 ZIP Analysis Report\n"
-        summary += f"Total files: {len(file_list)}\n\n"
-        summary += "Files found:\n"
-        summary += "\n".join(file_list[:25])
+        summary = f"ZIP File Analysis:\nTotal files: {len(file_list)}\n\n"
+        summary += "\n".join(file_list[:20])
         
-        if len(file_list) > 25:
-            summary += f"\n... and {len(file_list) - 25} more files"
+        if len(file_list) > 20:
+            summary += f"\n... and {len(file_list) - 20} more files"
         
-        # Add file contents for analysis
-        summary += "\n\n--- File Contents ---\n"
-        for name, content in list(file_contents.items())[:10]:
-            summary += f"\n📄 {name}:\n{content[:1000]}\n"
-        
-        ai_prompt = f"""Analyze this ZIP file DEEPLY and provide:
+        ai_prompt = f"""Analyze this ZIP file and provide:
+1. What type of project this is
+2. Any errors or issues found
+3. Complete fixes and solutions
+4. Improvements recommendations
 
-1. 📋 What type of project this is
-2. 🔍 All errors, bugs, or issues found
-3. ✅ Complete fixes and solutions for each error
-4. 💡 Improvements and optimization suggestions
-5. 🚀 Working code replacements if needed
-
-Be thorough and provide complete working solutions.
-
-{summary}
-
-Provide a detailed, professional analysis with fixes."""
+ZIP Contents:
+{summary}"""
 
         payload = {
             "model": "nousresearch/hermes-3-llama-3.1-405b",
             "messages": [
-                {"role": "system", "content": "You are NIMA DEV AI. Analyze ZIP files deeply, find ALL errors, provide complete fixes. Be extremely thorough and professional."},
+                {"role": "system", "content": "You are NIMA DEV AI. Analyze ZIP files, find errors, provide fixes."},
                 {"role": "user", "content": ai_prompt}
             ]
         }
@@ -1321,16 +1324,6 @@ if __name__ == '__main__':
     print(f"🔑 API Key: {OPENROUTER_API_KEY[:15]}...")
     print(f"🌐 Running on: http://localhost:{port}")
     print("="*60)
-    print("💪 CAPABILITIES:")
-    print("   • 💻 Coding (All Languages)")
-    print("   • 📦 ZIP Analysis & Fixes")
-    print("   • 🎨 Image Processing Code")
-    print("   • 🔧 Debugging & Error Fixing")
-    print("   • 🌐 Web Development")
-    print("   • 🤖 AI & Machine Learning")
-    print("   • 🔐 Cybersecurity")
-    print("   • 📊 Data Analysis")
-    print("   • 📝 Content Creation")
-    print("   • 🔄 Automation")
+    print("✅ Email Login FIXED!")
     print("="*60)
     app.run(host='0.0.0.0', port=port, debug=True)
