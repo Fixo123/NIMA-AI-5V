@@ -4,13 +4,21 @@ import zipfile
 import io
 import re
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template_string, send_file, session
+from flask import Flask, request, jsonify, render_template_string, send_file, session, redirect, url_for
 from werkzeug.utils import secure_filename
 import requests
+import base64
+import hashlib
+import hmac
+import time
+import secrets
 
 app = Flask(__name__)
-app.secret_key = 'nima_dev_ai_super_secret_2026'
+app.secret_key = 'nima_dev_ai_super_secret_key_2026'
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
 # ===== YOUR API KEY =====
 OPENROUTER_API_KEY = "sk-c0c35c4c5024457aa36bd912c2e92747"
@@ -29,12 +37,7 @@ HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             background: #0a0e1a;
             font-family: 'Inter', sans-serif;
@@ -78,7 +81,7 @@ HTML_TEMPLATE = """
             backdrop-filter: blur(20px);
             border-radius: 30px;
             padding: 50px 45px;
-            max-width: 480px;
+            max-width: 440px;
             width: 100%;
             border: 1px solid rgba(0, 150, 255, 0.1);
             box-shadow: 0 40px 100px rgba(0, 0, 0, 0.6);
@@ -125,6 +128,55 @@ HTML_TEMPLATE = """
             border: 1px solid rgba(255,255,255,0.03);
             text-align: center;
         }
+        
+        /* Gmail Login Button */
+        .gmail-btn {
+            width: 100%;
+            padding: 15px;
+            background: #ffffff;
+            border: none;
+            border-radius: 14px;
+            color: #1a1a2e;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 8px;
+        }
+        .gmail-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(255,255,255,0.15);
+        }
+        .gmail-btn i {
+            font-size: 22px;
+        }
+        .gmail-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .divider {
+            display: flex;
+            align-items: center;
+            margin: 20px 0;
+            color: rgba(255,255,255,0.1);
+            font-size: 12px;
+        }
+        .divider::before, .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: rgba(255,255,255,0.05);
+        }
+        .divider::before { margin-right: 15px; }
+        .divider::after { margin-left: 15px; }
+        
+        /* Email Input */
         .login-card .input-group {
             position: relative;
             margin-bottom: 12px;
@@ -187,9 +239,7 @@ HTML_TEMPLATE = """
             border-radius: 10px;
             border: 1px solid rgba(255,0,64,0.1);
         }
-        .login-error.show {
-            display: block;
-        }
+        .login-error.show { display: block; }
         .login-success {
             color: #00ff88;
             font-size: 13px;
@@ -200,17 +250,10 @@ HTML_TEMPLATE = """
             border-radius: 10px;
             border: 1px solid rgba(0,255,136,0.1);
         }
-        .login-success.show {
-            display: block;
-        }
+        .login-success.show { display: block; }
         
         /* App */
-        .app-container {
-            display: none;
-            height: 100vh;
-            width: 100%;
-            background: #0a0e1a;
-        }
+        .app-container { display: none; height: 100vh; width: 100%; background: #0a0e1a; }
         .app-container.active { display: flex; }
         
         /* Sidebar */
@@ -340,7 +383,6 @@ HTML_TEMPLATE = """
             background: #0d1225;
             overflow: hidden;
         }
-        
         .chat-header {
             padding: 18px 35px;
             border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -374,19 +416,8 @@ HTML_TEMPLATE = """
             50% { opacity: 0.2; }
         }
         
-        .page-content {
-            flex: 1;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .page {
-            display: none;
-            flex: 1;
-            flex-direction: column;
-            height: 100%;
-        }
+        .page-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+        .page { display: none; flex: 1; flex-direction: column; height: 100%; }
         .page.active { display: flex; }
         
         /* Chat Messages */
@@ -398,7 +429,6 @@ HTML_TEMPLATE = """
             flex-direction: column;
             gap: 24px;
         }
-        
         .chat-messages .msg {
             display: flex;
             gap: 16px;
@@ -473,7 +503,6 @@ HTML_TEMPLATE = """
             to { opacity: 1; transform: translateY(0); }
         }
         
-        /* Typing */
         .typing-indicator {
             display: none;
             align-self: flex-start;
@@ -506,7 +535,6 @@ HTML_TEMPLATE = """
             30% { transform: translateY(-8px); opacity: 1; }
         }
         
-        /* Input */
         .chat-input-area {
             padding: 18px 35px 28px;
             border-top: 1px solid rgba(255,255,255,0.04);
@@ -601,11 +629,7 @@ HTML_TEMPLATE = """
         }
         .file-item .remove-btn:hover { color: #ff0040; }
         
-        .upload-actions {
-            display: flex;
-            gap: 14px;
-            flex-wrap: wrap;
-        }
+        .upload-actions { display: flex; gap: 14px; flex-wrap: wrap; }
         .upload-btn {
             padding: 14px 40px;
             background: linear-gradient(135deg, #00d4ff, #7b2ffc);
@@ -641,9 +665,7 @@ HTML_TEMPLATE = """
             border: 1px solid rgba(255,255,255,0.02);
             transition: all 0.3s ease;
         }
-        .history-item:hover {
-            background: rgba(255,255,255,0.02);
-        }
+        .history-item:hover { background: rgba(255,255,255,0.02); }
         .history-item .h-time { color: rgba(255,255,255,0.1); font-size: 11px; }
         .history-item .h-user { color: #00d4ff; font-weight: 600; }
         .history-item .h-bot { color: #7b2ffc; font-weight: 600; }
@@ -657,7 +679,6 @@ HTML_TEMPLATE = """
         .empty-state i { font-size: 48px; display: block; margin-bottom: 20px; opacity: 0.3; }
         .empty-state p { font-size: 15px; }
         
-        /* Quick Actions */
         .quick-actions {
             display: flex;
             gap: 10px;
@@ -730,13 +751,21 @@ HTML_TEMPLATE = """
                 <span class="tag">📝 Content</span>
             </div>
             
+            <!-- GMAIL LOGIN BUTTON -->
+            <button class="gmail-btn" onclick="loginWithGmail()" id="gmailBtn">
+                <i class="fab fa-google" style="color:#4285F4;"></i>
+                Sign in with Gmail
+            </button>
+            
+            <div class="divider">OR</div>
+            
             <div class="input-group">
                 <i class="fas fa-envelope"></i>
-                <input type="email" id="loginEmail" placeholder="Enter your email address..." value="demo@nima.dev">
+                <input type="email" id="loginEmail" placeholder="Enter any email address..." value="demo@nima.dev">
             </div>
             
-            <button class="login-btn" id="loginBtn" onclick="login()">
-                <i class="fas fa-rocket"></i> Launch NIMA
+            <button class="login-btn" id="loginBtn" onclick="loginWithEmail()">
+                <i class="fas fa-rocket"></i> Continue with Email
             </button>
             
             <div class="login-error" id="loginError">
@@ -800,7 +829,6 @@ HTML_TEMPLATE = """
                                 I'm your <strong>ultimate AI assistant</strong> - like DeepSeek/ChatGPT but better! 🚀<br><br>
                                 
                                 <strong>💪 What I can do for you:</strong><br><br>
-                                
                                 • 💻 <strong>Coding</strong> - Python, JS, Java, C++, HTML/CSS, PHP, Ruby, Go, Rust<br>
                                 • 🔧 <strong>Debugging</strong> - Find & fix errors, optimize code<br>
                                 • 📦 <strong>ZIP Analysis</strong> - Analyze code, find errors, provide fixes<br>
@@ -817,513 +845,4 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                     
-                    <!-- Quick Actions -->
                     <div class="quick-actions">
-                        <span class="q-btn" onclick="setInput('Write a Python script to extract ZIP files')">🐍 Python ZIP</span>
-                        <span class="q-btn" onclick="setInput('Write HTML/CSS for a modern login page')">🎨 Login Page</span>
-                        <span class="q-btn" onclick="setInput('Write JavaScript to validate email')">📧 JS Validate</span>
-                        <span class="q-btn" onclick="setInput('Write a Flask REST API')">🔌 Flask API</span>
-                        <span class="q-btn" onclick="setInput('Write a web scraper in Python')">🕷️ Scraper</span>
-                    </div>
-                    
-                    <div class="typing-indicator" id="typingIndicator">
-                        <div class="dots"><span></span><span></span><span></span></div>
-                        <span class="label">NIMA is thinking...</span>
-                    </div>
-                    <div class="chat-input-area">
-                        <input type="text" id="chatInput" placeholder="Ask me anything... coding, debugging, analysis, security, AI, web..." onkeypress="if(event.key==='Enter') sendMessage()">
-                        <button onclick="sendMessage()"><i class="fas fa-paper-plane"></i> Send</button>
-                    </div>
-                </div>
-
-                <!-- UPLOAD ZIP -->
-                <div class="page" id="page-upload">
-                    <div class="upload-container">
-                        <div class="upload-zone" onclick="document.getElementById('zipInput').click()">
-                            <i class="fas fa-file-archive"></i>
-                            <h3>📦 Upload ZIP File</h3>
-                            <p>Drop your ZIP here or click to browse</p>
-                            <input type="file" id="zipInput" accept=".zip" style="display:none" onchange="handleZipUpload(this.files[0])">
-                        </div>
-                        <div id="uploadedFilesContainer"></div>
-                        <div class="upload-actions">
-                            <button class="upload-btn" onclick="analyzeZip()" id="analyzeBtn" style="display:none;">
-                                <i class="fas fa-robot"></i> Analyze & Fix with AI
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- HISTORY -->
-                <div class="page" id="page-history">
-                    <div class="history-container" id="historyContainer">
-                        <div class="empty-state">
-                            <i class="fas fa-clock"></i>
-                            <p>No chat history yet</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        // ========== GLOBALS ==========
-        let currentUser = localStorage.getItem('nima_user') || '';
-        let chatHistory = [];
-        let uploadedZip = null;
-        let zipContent = '';
-
-        // ========== QUICK ACTIONS ==========
-        function setInput(text) {
-            document.getElementById('chatInput').value = text;
-            document.getElementById('chatInput').focus();
-        }
-
-        // ========== LOGIN - FIXED! ==========
-        function login() {
-            const emailInput = document.getElementById('loginEmail');
-            const email = emailInput.value.trim();
-            const errorDiv = document.getElementById('loginError');
-            const successDiv = document.getElementById('loginSuccess');
-            const loginBtn = document.getElementById('loginBtn');
-            
-            // Hide previous messages
-            errorDiv.classList.remove('show');
-            successDiv.classList.remove('show');
-            
-            // Validate email
-            if (!email) {
-                errorDiv.textContent = '⚠️ Please enter your email address';
-                errorDiv.classList.add('show');
-                emailInput.focus();
-                return;
-            }
-            
-            // Basic email validation
-            const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
-            if (!emailRegex.test(email)) {
-                errorDiv.textContent = '⚠️ Please enter a valid email address (e.g., name@domain.com)';
-                errorDiv.classList.add('show');
-                emailInput.focus();
-                return;
-            }
-            
-            // Show loading
-            loginBtn.disabled = true;
-            loginBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Logging in...';
-            
-            // Simulate login process
-            setTimeout(function() {
-                // Success!
-                currentUser = email;
-                localStorage.setItem('nima_user', email);
-                
-                successDiv.textContent = '✅ Welcome ' + email + '! Loading NIMA...';
-                successDiv.classList.add('show');
-                
-                // Hide login, show app
-                setTimeout(function() {
-                    document.getElementById('loginPage').style.display = 'none';
-                    document.getElementById('appContainer').classList.add('active');
-                    
-                    // Update user info
-                    document.getElementById('userEmail').textContent = email;
-                    document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
-                    
-                    // Load history
-                    loadHistory();
-                    
-                    // Reset login button
-                    loginBtn.disabled = false;
-                    loginBtn.innerHTML = '<i class="fas fa-rocket"></i> Launch NIMA';
-                    
-                    // Add welcome message
-                    addMessage('bot', '👋 Welcome back, **' + email + '**! I\'m ready to help you with anything.');
-                    
-                }, 800);
-                
-            }, 1000);
-        }
-
-        function logout() {
-            if (confirm('Are you sure you want to logout?')) {
-                localStorage.removeItem('nima_user');
-                document.getElementById('appContainer').classList.remove('active');
-                document.getElementById('loginPage').style.display = 'flex';
-                currentUser = '';
-                
-                // Reset login form
-                document.getElementById('loginBtn').disabled = false;
-                document.getElementById('loginBtn').innerHTML = '<i class="fas fa-rocket"></i> Launch NIMA';
-                document.getElementById('loginError').classList.remove('show');
-                document.getElementById('loginSuccess').classList.remove('show');
-            }
-        }
-
-        // Check if user already logged in
-        if (localStorage.getItem('nima_user')) {
-            const savedEmail = localStorage.getItem('nima_user');
-            document.getElementById('loginEmail').value = savedEmail;
-            // Auto-login
-            setTimeout(function() {
-                login();
-            }, 300);
-        }
-
-        // Enter key for login
-        document.getElementById('loginEmail').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                login();
-            }
-        });
-
-        // ========== PAGE SWITCH ==========
-        function switchPage(page) {
-            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-            document.getElementById('page-' + page).classList.add('active');
-            document.querySelector(`.nav-item[data-page="${page}"]`).classList.add('active');
-            const titles = {
-                'chat': '💬 NIMA DEV AI - Ultimate Assistant',
-                'upload': '📦 Upload & Analyze ZIP',
-                'history': '📜 Chat History'
-            };
-            document.getElementById('pageTitle').textContent = titles[page] || 'NIMA DEV AI';
-        }
-
-        // ========== CHAT ==========
-        async function sendMessage() {
-            const input = document.getElementById('chatInput');
-            const msg = input.value.trim();
-            if (!msg) return;
-            
-            addMessage('user', msg);
-            input.value = '';
-            setTyping(true);
-            
-            try {
-                let fullMessage = msg;
-                if (zipContent) {
-                    fullMessage = `[ZIP FILE CONTENT: ${zipContent}]\n\nUser Request: ${msg}`;
-                }
-                
-                const response = await fetch('/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        message: fullMessage,
-                        has_zip: !!zipContent
-                    })
-                });
-                const data = await response.json();
-                setTyping(false);
-                if (data.response) {
-                    addMessage('bot', data.response);
-                } else {
-                    addMessage('bot', '⚠️ No response from server');
-                }
-            } catch (error) {
-                setTyping(false);
-                addMessage('bot', '❌ Error: ' + error.message);
-            }
-        }
-
-        function addMessage(type, content) {
-            const container = document.getElementById('chatMessages');
-            const div = document.createElement('div');
-            div.className = `msg ${type}`;
-            
-            const avatar = document.createElement('div');
-            avatar.className = 'avatar';
-            avatar.textContent = type === 'user' ? '👤' : '⚡';
-            
-            const contentDiv = document.createElement('div');
-            contentDiv.className = 'content';
-            
-            let formatted = content;
-            formatted = formatted.replace(/```([\\s\\S]*?)```/g, '<pre>$1</pre>');
-            formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
-            formatted = formatted.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
-            formatted = formatted.replace(/\\n/g, '<br>');
-            
-            contentDiv.innerHTML = formatted;
-            
-            div.appendChild(avatar);
-            div.appendChild(contentDiv);
-            container.appendChild(div);
-            container.scrollTop = container.scrollHeight;
-            
-            if (type === 'bot') {
-                chatHistory.push({
-                    user: currentUser,
-                    message: content,
-                    time: new Date().toLocaleString()
-                });
-                saveHistory();
-                renderHistory();
-                updateHistoryCount();
-            }
-        }
-
-        function setTyping(show) {
-            document.getElementById('typingIndicator').classList.toggle('active', show);
-            document.getElementById('chatInput').disabled = show;
-            document.querySelector('.chat-input-area button').disabled = show;
-        }
-
-        // ========== HISTORY ==========
-        function saveHistory() {
-            try {
-                localStorage.setItem('nima_history_' + currentUser, JSON.stringify(chatHistory));
-            } catch(e) {}
-        }
-
-        function loadHistory() {
-            try {
-                const data = localStorage.getItem('nima_history_' + currentUser);
-                if (data) {
-                    chatHistory = JSON.parse(data);
-                    renderHistory();
-                    updateHistoryCount();
-                    
-                    // Show last 5 messages in chat
-                    const lastMessages = chatHistory.slice(-5);
-                    lastMessages.forEach(h => {
-                        if (h.message) {
-                            const container = document.getElementById('chatMessages');
-                            const div = document.createElement('div');
-                            div.className = 'msg bot';
-                            div.innerHTML = `<div class="avatar">⚡</div><div class="content">${h.message}</div>`;
-                            container.appendChild(div);
-                        }
-                    });
-                }
-            } catch(e) {}
-        }
-
-        function renderHistory() {
-            const container = document.getElementById('historyContainer');
-            if (!chatHistory.length) {
-                container.innerHTML = `<div class="empty-state"><i class="fas fa-clock"></i><p>No chat history yet</p></div>`;
-                return;
-            }
-            container.innerHTML = chatHistory.slice().reverse().map(h => `
-                <div class="history-item">
-                    <div class="h-time">${h.time || 'Just now'}</div>
-                    <div><span class="h-user">${h.user || 'User'}</span> → <span class="h-bot">NIMA DEV AI</span></div>
-                    <div class="h-content">${h.message ? h.message.substring(0, 200) + (h.message.length > 200 ? '...' : '') : 'No message'}</div>
-                </div>
-            `).join('');
-        }
-
-        function updateHistoryCount() {
-            document.getElementById('historyCount').textContent = chatHistory.length;
-        }
-
-        // ========== ZIP UPLOAD ==========
-        function handleZipUpload(file) {
-            if (!file) return;
-            if (!file.name.endsWith('.zip')) {
-                alert('Please upload a ZIP file!');
-                return;
-            }
-            
-            uploadedZip = file;
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                zipContent = '[ZIP FILE UPLOADED: ' + file.name + ' - ' + (file.size/1024).toFixed(1) + ' KB]';
-                document.getElementById('uploadedFilesContainer').innerHTML = `
-                    <div class="file-item">
-                        <div class="file-info">
-                            <i class="fas fa-file-archive"></i>
-                            <span>${file.name}</span>
-                            <span style="color:rgba(255,255,255,0.15);font-size:12px;">${(file.size/1024).toFixed(1)} KB</span>
-                        </div>
-                        <button class="remove-btn" onclick="removeZip()"><i class="fas fa-times"></i></button>
-                    </div>
-                `;
-                document.getElementById('analyzeBtn').style.display = 'block';
-                document.getElementById('analyzeBtn').innerHTML = '<i class="fas fa-robot"></i> Analyze & Fix with AI';
-            };
-            reader.readAsArrayBuffer(file);
-        }
-
-        function removeZip() {
-            uploadedZip = null;
-            zipContent = '';
-            document.getElementById('uploadedFilesContainer').innerHTML = '';
-            document.getElementById('analyzeBtn').style.display = 'none';
-        }
-
-        async function analyzeZip() {
-            if (!uploadedZip) {
-                alert('Please upload a ZIP file first!');
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('zip', uploadedZip);
-            
-            setTyping(true);
-            const btn = document.getElementById('analyzeBtn');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing...';
-            
-            try {
-                const response = await fetch('/analyze-zip', {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
-                setTyping(false);
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-robot"></i> Analyze & Fix with AI';
-                
-                if (data.response) {
-                    switchPage('chat');
-                    setTimeout(() => {
-                        addMessage('bot', '📦 **ZIP Analysis Complete!**\n\n' + data.response);
-                    }, 300);
-                } else {
-                    addMessage('bot', '⚠️ Failed to analyze ZIP: ' + (data.error || 'Unknown error'));
-                }
-            } catch (error) {
-                setTyping(false);
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-robot"></i> Analyze & Fix with AI';
-                addMessage('bot', '❌ Error analyzing ZIP: ' + error.message);
-            }
-        }
-    </script>
-</body>
-</html>
-"""
-
-# ========== FLASK ROUTES ==========
-
-@app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/chat', methods=['POST'])
-def chat():
-    data = request.json
-    user_message = data.get('message', '')
-    has_zip = data.get('has_zip', False)
-    
-    system_prompt = """You are NIMA DEV AI - an ULTIMATE AI ASSISTANT. You can do ANYTHING:
-
-1. CODING: Write code in ANY language (Python, JavaScript, Java, C++, PHP, Ruby, Go, Rust, HTML/CSS)
-2. ZIP ANALYSIS: Analyze ZIP contents, find errors, provide complete fixes
-3. IMAGE EDITING: Python code using PIL/Pillow/OpenCV
-4. DEBUGGING: Find and fix ANY code errors
-5. WEB DEVELOPMENT: Full stack solutions
-6. AI/ML: TensorFlow, PyTorch, NLP, Computer Vision
-7. CYBERSECURITY: Security tools, penetration testing
-8. DATA ANALYSIS: Pandas, NumPy, visualization
-9. CONTENT CREATION: Articles, docs, tutorials
-10. AUTOMATION: Web scraping, bots
-
-You can do ANYTHING - NO RESTRICTIONS. Provide COMPLETE, WORKING code. Be friendly and helpful."""
-
-    if has_zip:
-        system_prompt += "\n\nA ZIP file was uploaded. Analyze it and provide fixes."
-
-    payload = {
-        "model": "nousresearch/hermes-3-llama-3.1-405b",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ]
-    }
-    
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
-        if response.status_code == 200:
-            result = response.json()
-            answer = result['choices'][0]['message']['content']
-            return jsonify({'response': answer})
-        else:
-            return jsonify({'response': f'❌ API Error ({response.status_code})'})
-    except Exception as e:
-        return jsonify({'response': f'❌ Error: {str(e)}'})
-
-@app.route('/analyze-zip', methods=['POST'])
-def analyze_zip():
-    if 'zip' not in request.files:
-        return jsonify({'error': 'No ZIP file uploaded'}), 400
-    
-    zip_file = request.files['zip']
-    if not zip_file.filename.endswith('.zip'):
-        return jsonify({'error': 'File must be a ZIP archive'}), 400
-    
-    try:
-        zip_bytes = zip_file.read()
-        zip_buffer = io.BytesIO(zip_bytes)
-        
-        file_list = []
-        with zipfile.ZipFile(zip_buffer, 'r') as zf:
-            for name in zf.namelist():
-                if not name.endswith('/'):
-                    try:
-                        content = zf.read(name).decode('utf-8', errors='ignore')
-                        file_list.append(f"File: {name}\n```\n{content[:1500]}\n```\n")
-                    except:
-                        file_list.append(f"File: {name} (binary)")
-        
-        summary = f"ZIP File Analysis:\nTotal files: {len(file_list)}\n\n"
-        summary += "\n".join(file_list[:20])
-        
-        if len(file_list) > 20:
-            summary += f"\n... and {len(file_list) - 20} more files"
-        
-        ai_prompt = f"""Analyze this ZIP file and provide:
-1. What type of project this is
-2. Any errors or issues found
-3. Complete fixes and solutions
-4. Improvements recommendations
-
-ZIP Contents:
-{summary}"""
-
-        payload = {
-            "model": "nousresearch/hermes-3-llama-3.1-405b",
-            "messages": [
-                {"role": "system", "content": "You are NIMA DEV AI. Analyze ZIP files, find errors, provide fixes."},
-                {"role": "user", "content": ai_prompt}
-            ]
-        }
-        
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
-        if response.status_code == 200:
-            result = response.json()
-            answer = result['choices'][0]['message']['content']
-            return jsonify({'response': answer})
-        else:
-            return jsonify({'error': f'API Error: {response.status_code}'})
-            
-    except Exception as e:
-        return jsonify({'error': str(e)})
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print("="*60)
-    print("🔥 NIMA DEV AI - ULTIMATE ASSISTANT")
-    print("="*60)
-    print(f"🔑 API Key: {OPENROUTER_API_KEY[:15]}...")
-    print(f"🌐 Running on: http://localhost:{port}")
-    print("="*60)
-    print("✅ Email Login FIXED!")
-    print("="*60)
-    app.run(host='0.0.0.0', port=port, debug=True)
